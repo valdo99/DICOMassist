@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Circle, Eye, EyeOff } from 'lucide-react';
 import { imageLoader, getRenderingEngine } from '@cornerstonejs/core';
 import type { IStackViewport } from '@cornerstonejs/core';
@@ -15,9 +15,10 @@ import DisclaimerModal from './ui/DisclaimerModal';
 import LandingScreen from './ui/LandingScreen';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
-import type { ProviderConfig, ViewportContext } from './llm/types';
+import type { ProviderConfig, ViewportContext, ResolvedCircleAnnotation } from './llm/types';
 import { useLLMChat, type SliceMapping } from './llm/useLLMChat';
 import { drawCircleAnnotations } from './viewer/AnnotationDrawer';
+import type { AgentBridge } from './agent/types';
 import { logger } from './utils/logger';
 
 const STORAGE_KEY = 'dicomassist-llm-config';
@@ -56,8 +57,70 @@ export default function App() {
   const [flipV, setFlipV] = useState(false);
   const [cineEnabled, setCineEnabled] = useState(false);
   const [showAiCircles, setShowAiCircles] = useState(true);
+  const [agentAnnotations, setAgentAnnotations] = useState<ResolvedCircleAnnotation[]>([]);
   const resetRef = useRef<(() => void) | null>(null);
   const chatSidebarRef = useRef<ChatSidebarHandle>(null);
+
+  // Bridge the agent's tools use to drive the viewer. Rebuilt only when the
+  // study changes; the state setters it closes over are stable.
+  const agentBridge = useMemo<AgentBridge>(() => {
+    type Series = StudyMetadata['series'][number];
+    const showSlice = (series: Series, instanceNumber: number, wc?: number, ww?: number) => {
+      const engine = getRenderingEngine('dicomRenderingEngine');
+      const targetImageIds = series.slices.map((s) => s.imageId);
+      const vp0 = engine?.getViewport('CT_STACK') as IStackViewport | undefined;
+      const currentIds = vp0?.getImageIds?.() ?? [];
+      const alreadyActive = currentIds.length > 0 && currentIds[0] === targetImageIds[0];
+      if (!alreadyActive) {
+        setImageIds(targetImageIds);
+        setActiveSeriesUID(series.seriesInstanceUID);
+        const plane = series.anatomicalPlane === 'oblique' ? 'axial' : series.anatomicalPlane;
+        setPrimaryAxis(plane);
+        setOrientation(plane);
+        setLayout('1x1');
+      }
+      let attempts = 0;
+      const apply = () => {
+        const eng = getRenderingEngine('dicomRenderingEngine');
+        const vp = (eng?.getViewport('CT_STACK') ?? eng?.getViewport('CT_SINGLE_VOL')) as IStackViewport | undefined;
+        const ids = vp?.getImageIds?.() ?? [];
+        if (!vp || ids.length === 0) {
+          if (attempts++ < 8) setTimeout(apply, 200);
+          return;
+        }
+        if (wc != null && ww != null) {
+          vp.setProperties({ voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 } });
+        }
+        const idx = series.slices.findIndex((s) => s.instanceNumber === instanceNumber);
+        if (idx >= 0 && idx < ids.length) vp.setImageIdIndex(idx);
+        vp.render();
+      };
+      setTimeout(apply, alreadyActive ? 0 : 350);
+    };
+    return {
+      viewSeries(seriesNumber, instanceNumber, wc, ww) {
+        const series = studyMetadata?.series.find((s) => String(s.seriesNumber) === seriesNumber);
+        if (series) showSlice(series, instanceNumber, wc, ww);
+      },
+      navigateToSlice(seriesNumber, instanceNumber) {
+        const series = studyMetadata?.series.find((s) => String(s.seriesNumber) === seriesNumber);
+        if (series) showSlice(series, instanceNumber);
+      },
+      setWindowLevel(wc, ww) {
+        const eng = getRenderingEngine('dicomRenderingEngine');
+        const vp = (eng?.getViewport('CT_STACK') ?? eng?.getViewport('CT_SINGLE_VOL')) as IStackViewport | undefined;
+        if (!vp) return;
+        vp.setProperties({ voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 } });
+        vp.render();
+      },
+      drawCircle(ann) {
+        setAgentAnnotations((prev) => (prev.some((a) => a.uid === ann.uid) ? prev : [...prev, ann]));
+      },
+      clearCircles() {
+        setAgentAnnotations([]);
+      },
+    };
+  }, [studyMetadata]);
 
   const {
     messages,
@@ -71,7 +134,8 @@ export default function App() {
     cancelPlan,
     sendFollowUp,
     clearChat,
-  } = useLLMChat(studyMetadata, providerConfig);
+    agentSteps,
+  } = useLLMChat(studyMetadata, providerConfig, agentBridge);
 
   useEffect(() => {
     initCornerstone().then(() => setReady(true));
@@ -346,9 +410,15 @@ export default function App() {
   // the user toggles visibility. drawCircleAnnotations clears prior AI circles
   // first, so passing [] is a clean "remove all". The delay lets a series switch
   // settle so the target slice's viewport is ready.
-  const annotations = pipeline?.annotations;
+  // Circles come from either the legacy pipeline (Ollama) or the agent path
+  // (Claude); whichever is populated is the active set.
+  const annotations = useMemo(
+    () => (pipeline?.annotations && pipeline.annotations.length > 0 ? pipeline.annotations : agentAnnotations),
+    [pipeline?.annotations, agentAnnotations],
+  );
+
   useEffect(() => {
-    const anns = showAiCircles ? (annotations ?? []) : [];
+    const anns = showAiCircles ? annotations : [];
     // drawCircleAnnotations clears prior AI circles then redraws, so it's
     // idempotent. Two passes cover the case where a series switch is still
     // setting up the stack viewport on the first pass.
@@ -359,11 +429,13 @@ export default function App() {
     return () => timers.forEach(clearTimeout);
   }, [annotations, imageIds, showAiCircles]);
 
-  // When a fresh analysis produces circles, jump the viewer to the first one so
-  // it's immediately visible (switching series if the finding is elsewhere).
+  // Legacy pipeline (Ollama): jump the viewer to the first circle when analysis
+  // completes. The agent path drives navigation itself via its tools.
   useEffect(() => {
-    if (!annotations || annotations.length === 0) return;
-    const first = annotations[0];
+    const anns = pipeline?.annotations;
+    if (!anns || anns.length === 0) return;
+    setShowAiCircles(true);
+    const first = anns[0];
     handleNavigateToSlice({
       imageIndex: 0,
       instanceNumber: first.instanceNumber,
@@ -373,7 +445,12 @@ export default function App() {
       seriesNumber: first.seriesNumber,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [annotations]);
+  }, [pipeline?.annotations]);
+
+  // Agent path: reveal circles as the agent draws them.
+  useEffect(() => {
+    if (agentAnnotations.length > 0) setShowAiCircles(true);
+  }, [agentAnnotations]);
 
   function scrollToSlice(
     instanceNumber: number,
@@ -531,14 +608,14 @@ export default function App() {
               studyMetadata={studyMetadata}
             />
           </div>
-          {(pipeline?.annotations?.length ?? 0) > 0 && (
+          {annotations.length > 0 && (
             <div
               className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-neutral-900/85 border border-blue-700/50 shadow-lg backdrop-blur-sm"
               title="AI-suggested regions — approximate visual guides, not measurements"
             >
               <span className="flex items-center gap-1.5 text-xs font-medium text-blue-300">
                 <Circle className="w-3.5 h-3.5" />
-                {pipeline!.annotations.length} AI region{pipeline!.annotations.length === 1 ? '' : 's'} marked
+                {annotations.length} AI region{annotations.length === 1 ? '' : 's'} marked
               </span>
               <span className="w-px h-3.5 bg-neutral-700" />
               <button
@@ -570,6 +647,7 @@ export default function App() {
             statusText={statusText}
             error={error}
             pipeline={pipeline}
+            agentSteps={agentSteps}
             currentPlan={currentPlan}
             studyMetadata={studyMetadata}
             onConfirmPlan={confirmPlan}

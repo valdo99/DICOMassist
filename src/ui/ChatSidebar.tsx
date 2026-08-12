@@ -3,6 +3,7 @@ import { X, Send, Trash2, AlertCircle, Loader2, ClipboardList, MessageSquare } f
 import type { ChatMessage, SelectionPlan } from '../llm/types';
 import type { StudyMetadata } from '../dicom/types';
 import type { ChatStatus, PipelineState, SliceMapping } from '../llm/useLLMChat';
+import type { AgentStepEvent } from '../agent/types';
 import { detectBodyPart, getChecklist, buildSurveyHint } from '../llm/anatomyChecklists';
 import PipelineView from './PipelineView';
 import AssistantMessage from './AssistantMessage';
@@ -18,6 +19,7 @@ interface ChatSidebarProps {
   statusText: string;
   error: string | null;
   pipeline: PipelineState | null;
+  agentSteps: AgentStepEvent[];
   currentPlan: SelectionPlan | null;
   studyMetadata: StudyMetadata | null;
   onConfirmPlan: (plan: SelectionPlan) => void;
@@ -35,6 +37,7 @@ export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSide
   statusText,
   error,
   pipeline,
+  agentSteps,
   currentPlan,
   studyMetadata,
   onConfirmPlan,
@@ -78,7 +81,7 @@ export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSide
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, status, pipeline, currentPlan]);
+  }, [messages, status, pipeline, currentPlan, agentSteps]);
 
   const handleSend = () => {
     const trimmed = input.trim();
@@ -173,6 +176,11 @@ export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSide
             </div>
           );
         })}
+
+        {/* Agent tool-call trace (Claude agent path) */}
+        {agentSteps.length > 0 && (
+          <AgentTrace steps={agentSteps} active={status === 'analyzing'} />
+        )}
 
         {/* Plan preview card — inline, only during awaiting-confirmation */}
         {status === 'awaiting-confirmation' && currentPlan && studyMetadata && (
@@ -334,4 +342,39 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   }
   // Assistant messages are rendered by AssistantMessage
   return null;
+}
+
+function agentToolLabel(name?: string): string {
+  switch (name) {
+    case 'view_slices': return 'Viewed slices';
+    case 'draw_circle': return 'Circled finding';
+    case 'navigate_to_slice': return 'Navigated viewer';
+    case 'set_window_level': return 'Adjusted window';
+    default: return name ?? 'Step';
+  }
+}
+
+/** Compact live trace of the agent's tool calls. */
+function AgentTrace({ steps, active }: { steps: AgentStepEvent[]; active: boolean }) {
+  const toolSteps = steps.filter((s) => s.type === 'tool-call');
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 space-y-1.5">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
+        {active ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
+        {active ? 'Agent working…' : 'Agent trace'}
+      </div>
+      {toolSteps.length === 0 && active && (
+        <div className="text-xs text-neutral-500">Reviewing the study…</div>
+      )}
+      {toolSteps.map((s, i) => (
+        <div key={i} className="flex items-start gap-1.5 text-xs">
+          <span className="mt-1 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+          <span className="text-neutral-300">
+            <span className="font-medium text-blue-300">{agentToolLabel(s.toolName)}</span>
+            {s.detail ? <span className="text-neutral-500"> · {s.detail}</span> : null}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }

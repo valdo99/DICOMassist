@@ -1,9 +1,11 @@
 import { useState, useCallback, useRef } from 'react';
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, ViewportContext, ResolvedCircleAnnotation } from './types';
+import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, ViewportContext, ResolvedCircleAnnotation, SliceCircle } from './types';
 import { createLLMService } from './LLMServiceFactory';
 import { selectSlicesForSelection } from '../filtering/SliceSelector';
 import { exportSlicesToJpeg } from '../filtering/SliceExporter';
+import { runDicomAgent } from '../agent/DicomAgent';
+import type { AgentBridge, AgentStepEvent } from '../agent/types';
 import { logger } from '../utils/logger';
 
 export type ChatStatus = 'idle' | 'planning' | 'awaiting-confirmation' | 'exporting' | 'analyzing' | 'following-up' | 'error';
@@ -48,6 +50,8 @@ interface UseLLMChatReturn {
   cancelPlan: () => void;
   sendFollowUp: (text: string) => Promise<void>;
   clearChat: () => void;
+  /** Live trace of the agent's tool calls (Claude agent path only). */
+  agentSteps: AgentStepEvent[];
 }
 
 const STATUS_LABELS: Record<ChatStatus, string> = {
@@ -62,6 +66,38 @@ const STATUS_LABELS: Record<ChatStatus, string> = {
 
 function makeId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+/**
+ * Map the LLM's normalized circles to concrete slices via the image manifest
+ * we sent (1-based image number → imageId). Circles referencing an image
+ * outside the manifest are dropped. UIDs are namespaced by the message id.
+ */
+function resolveCircleAnnotations(
+  rawCircles: SliceCircle[],
+  mappings: SliceMapping[],
+  messageId: string,
+): ResolvedCircleAnnotation[] {
+  const resolved: ResolvedCircleAnnotation[] = [];
+  for (let i = 0; i < rawCircles.length; i++) {
+    const c = rawCircles[i];
+    const mapping = mappings[c.image - 1];
+    if (!mapping || !mapping.imageId) {
+      logger.warn(`[Annotations] Circle references image ${c.image}, out of range (1–${mappings.length})`);
+      continue;
+    }
+    resolved.push({
+      uid: `ai-circle-${messageId}-${i}`,
+      imageId: mapping.imageId,
+      seriesNumber: mapping.seriesNumber,
+      instanceNumber: mapping.instanceNumber,
+      label: c.label,
+      cx: c.cx,
+      cy: c.cy,
+      radius: c.radius,
+    });
+  }
+  return resolved;
 }
 
 function updateStep(
@@ -198,19 +234,86 @@ function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): Selecti
 export function useLLMChat(
   metadata: StudyMetadata | null,
   providerConfig: ProviderConfig,
+  bridge?: AgentBridge,
 ): UseLLMChatReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [currentPlan, setCurrentPlan] = useState<SelectionPlan | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
+  const [agentSteps, setAgentSteps] = useState<AgentStepEvent[]>([]);
   const abortRef = useRef(false);
   const hintRef = useRef<string>('');
   const surveyModeRef = useRef(false);
   const planTimingRef = useRef<{ t0: number; t1: number }>({ t0: 0, t1: 0 });
+  // The exported images + their slice mapping from the last analysis, kept so
+  // follow-ups can re-send them (letting the agent see the images and draw
+  // annotations on any turn, not just the initial analysis).
+  const lastAnalysisRef = useRef<{ blobs: Blob[]; mappings: SliceMapping[] } | null>(null);
+  // Always-current messages, so the agent path can read the conversation without
+  // adding `messages` to startAnalysis's dependency list.
+  const messagesRef = useRef<ChatMessage[]>([]);
+  messagesRef.current = messages;
+  const agentAbortRef = useRef<AbortController | null>(null);
+
+  // Whether to route through the tool-using agent (Claude only — Ollama's
+  // tool/vision support is unreliable, so it stays on the legacy pipeline).
+  const useAgent = providerConfig.provider === 'claude' && !!bridge;
+
+  /** Run one agent turn: the tool loop produces the assistant reply and drives the viewer. */
+  const runAgentTurn = useCallback(async (history: ChatMessage[], isNewAnalysis: boolean) => {
+    if (!metadata || !bridge) return;
+    const apiKey = providerConfig.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      setError('Claude API key is required. Enter it in Settings.');
+      setStatus('error');
+      return;
+    }
+    if (isNewAnalysis) bridge.clearCircles();
+    setAgentSteps([]);
+    setError(null);
+    setStatus('analyzing');
+
+    const controller = new AbortController();
+    agentAbortRef.current = controller;
+    logger.group('[DICOMassist] Agent turn');
+    try {
+      const { text } = await runDicomAgent({
+        apiKey,
+        metadata,
+        history,
+        bridge,
+        onStep: (e) => setAgentSteps((prev) => [...prev, e]),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      const assistantMsg: ChatMessage = { id: makeId(), role: 'assistant', content: text, timestamp: Date.now() };
+      setMessages((prev) => [...prev, assistantMsg]);
+      setStatus('idle');
+    } catch (err) {
+      if (controller.signal.aborted) { setStatus('idle'); return; }
+      logger.warn('[Agent] error', err);
+      setError(err instanceof Error ? err.message : 'The agent hit an unexpected error.');
+      setStatus('error');
+    } finally {
+      logger.groupEnd();
+      agentAbortRef.current = null;
+    }
+  }, [metadata, providerConfig, bridge]);
 
   const startAnalysis = useCallback(async (hint: string, viewportContext?: ViewportContext, options?: { surveyMode?: boolean }) => {
     if (!metadata) return;
+
+    // Agent path (Claude): a single tool-using loop, no separate plan step.
+    if (useAgent) {
+      hintRef.current = hint;
+      const userMsg: ChatMessage = { id: makeId(), role: 'user', content: hint, timestamp: Date.now() };
+      const next = [...messagesRef.current, userMsg];
+      setMessages(next);
+      await runAgentTurn(next, true);
+      return;
+    }
+
     abortRef.current = false;
     surveyModeRef.current = options?.surveyMode ?? false;
     setError(null);
@@ -293,7 +396,7 @@ export function useLLMChat(
       setError(msg);
       setStatus('error');
     }
-  }, [metadata, providerConfig]);
+  }, [metadata, providerConfig, useAgent, runAgentTurn]);
 
   const confirmPlan = useCallback(async (adjustedPlan: SelectionPlan) => {
     if (!metadata) return;
@@ -429,29 +532,14 @@ export function useLLMChat(
 
       logger.log('Call 2 — Analysis response:', analysisText.slice(0, 200) + '...');
 
+      // Keep the images + mapping so follow-ups can re-send them and keep
+      // drawing on any turn.
+      lastAnalysisRef.current = { blobs: allBlobs, mappings: allMappings };
+
       // Resolve the LLM's normalized circles to concrete slices via the image
-      // manifest we sent (image number → imageId). Drop any that reference an
-      // image outside the manifest.
+      // manifest we sent (image number → imageId).
       const assistantId = makeId();
-      const resolvedAnnotations: ResolvedCircleAnnotation[] = [];
-      for (let i = 0; i < rawCircles.length; i++) {
-        const c = rawCircles[i];
-        const mapping = allMappings[c.image - 1];
-        if (!mapping || !mapping.imageId) {
-          logger.warn(`[Annotations] Circle references image ${c.image}, out of range (1–${allMappings.length})`);
-          continue;
-        }
-        resolvedAnnotations.push({
-          uid: `ai-circle-${assistantId}-${i}`,
-          imageId: mapping.imageId,
-          seriesNumber: mapping.seriesNumber,
-          instanceNumber: mapping.instanceNumber,
-          label: c.label,
-          cx: c.cx,
-          cy: c.cy,
-          radius: c.radius,
-        });
-      }
+      const resolvedAnnotations = resolveCircleAnnotations(rawCircles, allMappings, assistantId);
       logger.log(`[Annotations] Resolved ${resolvedAnnotations.length}/${rawCircles.length} circles`);
       logger.groupEnd();
 
@@ -486,6 +574,7 @@ export function useLLMChat(
 
   const cancelPlan = useCallback(() => {
     abortRef.current = true;
+    agentAbortRef.current?.abort();
     setStatus('idle');
     setCurrentPlan(null);
     setPipeline(null);
@@ -512,14 +601,39 @@ export function useLLMChat(
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
 
+    // Agent path (Claude): continue the same tool-using loop — the agent still
+    // has all its tools (view/draw/navigate), so it can annotate on any turn.
+    if (useAgent) {
+      await runAgentTurn(updatedMessages, false);
+      return;
+    }
+
     try {
       const service = createLLMService(providerConfig);
       setStatus('following-up');
 
-      const response = await service.sendFollowUp(updatedMessages, metadata);
+      // Re-send the analyzed images so the agent can still see them and draw
+      // annotations on this turn (not just during the initial analysis).
+      const last = lastAnalysisRef.current;
+      const images = last?.blobs;
+      const labels = last?.mappings.map((m) => m.label);
+
+      const assistantId = makeId();
+      const { text: response, annotations: rawCircles } =
+        await service.sendFollowUp(updatedMessages, metadata, images, labels);
+
+      // Draw any circles the follow-up produced. A follow-up that returns no
+      // circles (a plain text question) leaves existing circles in place.
+      if (rawCircles.length > 0 && last) {
+        const resolved = resolveCircleAnnotations(rawCircles, last.mappings, assistantId);
+        logger.log(`[Annotations] Follow-up resolved ${resolved.length}/${rawCircles.length} circles`);
+        if (resolved.length > 0) {
+          setPipeline((p) => p && ({ ...p, annotations: resolved }));
+        }
+      }
 
       const assistantMsg: ChatMessage = {
-        id: makeId(),
+        id: assistantId,
         role: 'assistant',
         content: response,
         timestamp: Date.now(),
@@ -531,17 +645,21 @@ export function useLLMChat(
       setError(msg);
       setStatus('error');
     }
-  }, [metadata, providerConfig, messages]);
+  }, [metadata, providerConfig, messages, useAgent, runAgentTurn]);
 
   const clearChat = useCallback(() => {
     abortRef.current = true;
+    agentAbortRef.current?.abort();
     surveyModeRef.current = false;
+    lastAnalysisRef.current = null;
     setMessages([]);
     setStatus('idle');
     setError(null);
     setCurrentPlan(null);
     setPipeline(null);
-  }, []);
+    setAgentSteps([]);
+    bridge?.clearCircles();
+  }, [bridge]);
 
   return {
     messages,
@@ -555,5 +673,6 @@ export function useLLMChat(
     cancelPlan,
     sendFollowUp,
     clearChat,
+    agentSteps,
   };
 }
