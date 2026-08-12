@@ -213,18 +213,58 @@ class ClaudeService implements LLMService {
     return extractAnnotations(raw);
   }
 
-  async sendFollowUp(conversationHistory: ChatMessage[], metadata: StudyMetadata): Promise<string> {
-    const messages = conversationHistory.map((msg) => ({
-      role: msg.role as 'user' | 'assistant',
-      content: msg.content,
-    }));
+  async sendFollowUp(
+    conversationHistory: ChatMessage[],
+    metadata: StudyMetadata,
+    images?: Blob[],
+    sliceLabels?: string[],
+  ): Promise<AnalysisResult> {
+    const hasImages = !!images && images.length > 0;
+    const messages: Array<{ role: 'user' | 'assistant'; content: unknown }> =
+      conversationHistory.map((msg) => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content as unknown,
+      }));
 
-    return this.callClaude({
-      system: buildFollowUpSystemPrompt() + '\n\nStudy context: ' + metadata.studyDescription,
+    // Re-attach the analyzed images to the latest user turn so the model can
+    // actually see them again — for both visual reasoning and annotations.
+    if (hasImages) {
+      const imageBlocks = await Promise.all(
+        images!.map(async (blob) => ({
+          type: 'image' as const,
+          source: {
+            type: 'base64' as const,
+            media_type: 'image/jpeg' as const,
+            data: await blobToBase64(blob),
+          },
+        })),
+      );
+      const manifest = (sliceLabels ?? [])
+        .map((l, i) => `  Image ${i + 1}: ${l}`)
+        .join('\n');
+      const lastIdx = messages.length - 1;
+      const lastText = typeof messages[lastIdx]?.content === 'string'
+        ? (messages[lastIdx].content as string)
+        : '';
+      messages[lastIdx] = {
+        role: 'user',
+        content: [
+          ...imageBlocks,
+          {
+            type: 'text' as const,
+            text: `The ${imageBlocks.length} analyzed images (in order):\n${manifest}\n\n${lastText}`,
+          },
+        ],
+      };
+    }
+
+    const raw = await this.callClaude({
+      system: buildFollowUpSystemPrompt(hasImages) + '\n\nStudy context: ' + metadata.studyDescription,
       messages,
       temperature: 0,
       maxTokens: 4096,
     });
+    return extractAnnotations(raw);
   }
 
   private async callClaude(params: {
@@ -307,20 +347,39 @@ class OllamaService implements LLMService {
     return extractAnnotations(raw);
   }
 
-  async sendFollowUp(conversationHistory: ChatMessage[], metadata: StudyMetadata): Promise<string> {
-    const messages = [
-      { role: 'system' as const, content: buildFollowUpSystemPrompt() + '\n\nStudy context: ' + metadata.studyDescription },
+  async sendFollowUp(
+    conversationHistory: ChatMessage[],
+    metadata: StudyMetadata,
+    images?: Blob[],
+    sliceLabels?: string[],
+  ): Promise<AnalysisResult> {
+    const hasImages = !!images && images.length > 0;
+    const base64Images = hasImages ? await Promise.all(images!.map(blobToBase64)) : undefined;
+
+    const messages: Array<{ role: string; content: string; images?: string[] }> = [
+      { role: 'system', content: buildFollowUpSystemPrompt(hasImages) + '\n\nStudy context: ' + metadata.studyDescription },
       ...conversationHistory.map((msg) => ({
         role: msg.role as 'user' | 'assistant',
         content: msg.content,
       })),
     ];
 
+    // Re-attach images to the latest user turn (vision model required for these).
+    if (hasImages && base64Images) {
+      const manifest = (sliceLabels ?? []).map((l, i) => `  ${i + 1}. ${l}`).join('\n');
+      const lastIdx = messages.length - 1;
+      messages[lastIdx] = {
+        ...messages[lastIdx],
+        content: `Analyzed images (in order):\n${manifest}\n\n${messages[lastIdx].content}`,
+        images: base64Images,
+      };
+    }
+
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: this.textModel,
+        model: hasImages ? this.visionModel : this.textModel,
         messages,
         stream: false,
         options: { temperature: 0 },
@@ -334,7 +393,7 @@ class OllamaService implements LLMService {
     }
 
     const data = await res.json();
-    return data.message?.content ?? '';
+    return extractAnnotations(data.message?.content ?? '');
   }
 
   private async callOllama(params: {

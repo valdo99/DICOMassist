@@ -96,5 +96,7 @@ export interface LLMService {
   sendFollowUp(
     conversationHistory: ChatMessage[],
     metadata: StudyMetadata,
-  ): Promise<string>;
+    images?: Blob[],
+    sliceLabels?: string[],
+  ): Promise<AnalysisResult>;
 }

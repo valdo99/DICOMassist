@@ -39,7 +39,7 @@ function formatSeriesSummary(s: SeriesMetadata): string {
   return parts.join(' | ');
 }
 
-function formatMetadataSummary(metadata: StudyMetadata): string {
+export function formatMetadataSummary(metadata: StudyMetadata): string {
   const lines: string[] = [
     '=== STUDY INFORMATION ===',
     `Study: ${metadata.studyDescription}`,
@@ -328,7 +328,7 @@ export function buildAnalysisSystemPrompt(surveyMode?: boolean): string {
  * marks localizable findings with a circle, exactly like a radiologist circling
  * a region on the image. The block is parsed out and stripped before display.
  */
-function buildAnnotationInstructions(): string[] {
+export function buildAnnotationInstructions(): string[] {
   return [
     '## MARKING FINDINGS ON THE IMAGE',
     '',
@@ -429,14 +429,34 @@ export function buildAnalysisUserPrompt(
   return lines.join('\n');
 }
 
-export function buildFollowUpSystemPrompt(): string {
-  return [
+export function buildFollowUpSystemPrompt(hasImages = false): string {
+  const lines = [
     'You are a medical imaging AI assistant continuing a conversation about DICOM image analysis.',
     DISCLAIMER,
     '',
     'You previously analyzed medical images and provided findings.',
-    'Continue the conversation by answering follow-up questions based on your prior analysis.',
-    'You do not have access to the images anymore — rely on your prior observations.',
-    'Be concise and helpful. If asked something outside the scope of your analysis, say so.',
-  ].join('\n');
+  ];
+
+  if (hasImages) {
+    lines.push(
+      'The images you analyzed are PROVIDED AGAIN in this message, so you CAN see them —',
+      'look at them directly to answer follow-up questions and to place annotations. Only',
+      'report what you can actually see; reference specific slices by number.',
+      '',
+      'When the user asks you to mark, circle, annotate, or point out a finding on the image,',
+      'you MUST actually do it by emitting the annotations block below. Do NOT merely describe',
+      'colored arrows/circles in prose — describing markings without emitting the block draws',
+      'nothing on the viewer and is a failure to use the tool.',
+      '',
+      ...buildAnnotationInstructions(),
+    );
+  } else {
+    lines.push(
+      'Continue the conversation by answering follow-up questions based on your prior analysis.',
+      'You do not have access to the images anymore — rely on your prior observations.',
+    );
+  }
+
+  lines.push('Be concise and helpful. If asked something outside the scope of your analysis, say so.');
+  return lines.join('\n');
 }
