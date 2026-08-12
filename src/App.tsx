@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Circle, Eye, EyeOff } from 'lucide-react';
 import { imageLoader, getRenderingEngine } from '@cornerstonejs/core';
 import type { IStackViewport } from '@cornerstonejs/core';
 import { initCornerstone } from './viewer/CornerstoneInit';
@@ -16,6 +17,7 @@ import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
 import type { ProviderConfig, ViewportContext } from './llm/types';
 import { useLLMChat, type SliceMapping } from './llm/useLLMChat';
+import { drawCircleAnnotations } from './viewer/AnnotationDrawer';
 import { logger } from './utils/logger';
 
 const STORAGE_KEY = 'dicomassist-llm-config';
@@ -53,6 +55,7 @@ export default function App() {
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
   const [cineEnabled, setCineEnabled] = useState(false);
+  const [showAiCircles, setShowAiCircles] = useState(true);
   const resetRef = useRef<(() => void) | null>(null);
   const chatSidebarRef = useRef<ChatSidebarHandle>(null);
 
@@ -338,6 +341,40 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [activeSeriesUID, studyMetadata]);
 
+  // Draw (or clear) the LLM's circle annotations on the viewer. Re-runs when the
+  // annotation set changes, when the loaded series changes (imageIds), or when
+  // the user toggles visibility. drawCircleAnnotations clears prior AI circles
+  // first, so passing [] is a clean "remove all". The delay lets a series switch
+  // settle so the target slice's viewport is ready.
+  const annotations = pipeline?.annotations;
+  useEffect(() => {
+    const anns = showAiCircles ? (annotations ?? []) : [];
+    // drawCircleAnnotations clears prior AI circles then redraws, so it's
+    // idempotent. Two passes cover the case where a series switch is still
+    // setting up the stack viewport on the first pass.
+    const timers = [
+      setTimeout(() => drawCircleAnnotations(anns), 300),
+      setTimeout(() => drawCircleAnnotations(anns), 900),
+    ];
+    return () => timers.forEach(clearTimeout);
+  }, [annotations, imageIds, showAiCircles]);
+
+  // When a fresh analysis produces circles, jump the viewer to the first one so
+  // it's immediately visible (switching series if the finding is elsewhere).
+  useEffect(() => {
+    if (!annotations || annotations.length === 0) return;
+    const first = annotations[0];
+    handleNavigateToSlice({
+      imageIndex: 0,
+      instanceNumber: first.instanceNumber,
+      imageId: first.imageId,
+      zPosition: 0,
+      label: '',
+      seriesNumber: first.seriesNumber,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotations]);
+
   function scrollToSlice(
     instanceNumber: number,
     imageId: string,
@@ -494,6 +531,25 @@ export default function App() {
               studyMetadata={studyMetadata}
             />
           </div>
+          {(pipeline?.annotations?.length ?? 0) > 0 && (
+            <div
+              className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-neutral-900/85 border border-blue-700/50 shadow-lg backdrop-blur-sm"
+              title="AI-suggested regions — approximate visual guides, not measurements"
+            >
+              <span className="flex items-center gap-1.5 text-xs font-medium text-blue-300">
+                <Circle className="w-3.5 h-3.5" />
+                {pipeline!.annotations.length} AI region{pipeline!.annotations.length === 1 ? '' : 's'} marked
+              </span>
+              <span className="w-px h-3.5 bg-neutral-700" />
+              <button
+                onClick={() => setShowAiCircles((v) => !v)}
+                className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-100 transition-colors"
+              >
+                {showAiCircles ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                {showAiCircles ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          )}
           <LoadingOverlay
             loaded={prefetchProgress.loaded}
             total={prefetchProgress.total}

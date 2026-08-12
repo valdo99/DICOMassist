@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, ViewportContext } from './types';
+import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, ViewportContext, ResolvedCircleAnnotation } from './types';
 import { createLLMService } from './LLMServiceFactory';
 import { selectSlicesForSelection } from '../filtering/SliceSelector';
 import { exportSlicesToJpeg } from '../filtering/SliceExporter';
@@ -32,6 +32,8 @@ export interface PipelineState {
   totalSlices: number;
   exportedSizes: string[];
   sliceMappings: SliceMapping[];
+  /** Circle annotations the LLM placed on findings, resolved to concrete slices. */
+  annotations: ResolvedCircleAnnotation[];
 }
 
 interface UseLLMChatReturn {
@@ -222,7 +224,7 @@ export function useLLMChat(
       { id: 'export', label: 'Exporting images', status: 'pending' },
       { id: 'analyze', label: `Analyzing images (${visionModel})`, status: 'pending' },
     ];
-    setPipeline({ steps: initialSteps, plan: null, sliceCount: 0, totalSlices: 0, exportedSizes: [], sliceMappings: [] });
+    setPipeline({ steps: initialSteps, plan: null, sliceCount: 0, totalSlices: 0, exportedSizes: [], sliceMappings: [], annotations: [] });
 
     const userMsg: ChatMessage = {
       id: makeId(),
@@ -420,24 +422,53 @@ export function useLLMChat(
 
       const sliceLabels = allMappings.map((m) => m.label);
       logger.log(`Call 2 — Sending ${allBlobs.length} images to LLM (${sliceLabels.join(', ')})...`);
-      const analysisText = await service.analyzeSlices(allBlobs, metadata, hint, adjustedPlan, sliceLabels, surveyModeRef.current);
+      const { text: analysisText, annotations: rawCircles } =
+        await service.analyzeSlices(allBlobs, metadata, hint, adjustedPlan, sliceLabels, surveyModeRef.current);
       const t5 = performance.now();
       if (abortRef.current) { logger.groupEnd(); return; }
 
       logger.log('Call 2 — Analysis response:', analysisText.slice(0, 200) + '...');
+
+      // Resolve the LLM's normalized circles to concrete slices via the image
+      // manifest we sent (image number → imageId). Drop any that reference an
+      // image outside the manifest.
+      const assistantId = makeId();
+      const resolvedAnnotations: ResolvedCircleAnnotation[] = [];
+      for (let i = 0; i < rawCircles.length; i++) {
+        const c = rawCircles[i];
+        const mapping = allMappings[c.image - 1];
+        if (!mapping || !mapping.imageId) {
+          logger.warn(`[Annotations] Circle references image ${c.image}, out of range (1–${allMappings.length})`);
+          continue;
+        }
+        resolvedAnnotations.push({
+          uid: `ai-circle-${assistantId}-${i}`,
+          imageId: mapping.imageId,
+          seriesNumber: mapping.seriesNumber,
+          instanceNumber: mapping.instanceNumber,
+          label: c.label,
+          cx: c.cx,
+          cy: c.cy,
+          radius: c.radius,
+        });
+      }
+      logger.log(`[Annotations] Resolved ${resolvedAnnotations.length}/${rawCircles.length} circles`);
       logger.groupEnd();
 
       setPipeline((p) => p && ({
         ...p,
+        annotations: resolvedAnnotations,
         steps: updateStep(p.steps, 'analyze', {
           status: 'done',
-          detail: `Response received`,
+          detail: resolvedAnnotations.length > 0
+            ? `Response received · ${resolvedAnnotations.length} region${resolvedAnnotations.length === 1 ? '' : 's'} marked`
+            : `Response received`,
           durationMs: Math.round(t5 - t4),
         }),
       }));
 
       const assistantMsg: ChatMessage = {
-        id: makeId(),
+        id: assistantId,
         role: 'assistant',
         content: analysisText,
         timestamp: Date.now(),

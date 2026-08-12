@@ -31,6 +31,41 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+/**
+ * A circle the LLM wants drawn on an image to mark a finding — coordinates
+ * are normalized to the image (0..1) so they're resolution-independent.
+ * Returned by Call 2 (multimodal analysis).
+ */
+export interface SliceCircle {
+  image: number;   // 1-based image number in the manifest sent to the model
+  cx: number;      // center x, fraction of width  (0 = left, 1 = right)
+  cy: number;      // center y, fraction of height (0 = top,  1 = bottom)
+  radius: number;  // radius, fraction of image width
+  label: string;   // short finding name, e.g. "ACL tear"
+}
+
+/** Result of Call 2: the prose analysis plus any circle annotations. */
+export interface AnalysisResult {
+  text: string;
+  annotations: SliceCircle[];
+}
+
+/**
+ * A SliceCircle resolved to a concrete slice (imageId), ready to draw on the
+ * viewport. The image number the model returned has been mapped to the actual
+ * DICOM slice it was rendered from.
+ */
+export interface ResolvedCircleAnnotation {
+  uid: string;            // stable Cornerstone annotationUID
+  imageId: string;        // Cornerstone imageId of the slice to draw on
+  seriesNumber: string;
+  instanceNumber: number;
+  label: string;
+  cx: number;             // normalized center x (0..1)
+  cy: number;             // normalized center y (0..1)
+  radius: number;         // normalized radius, fraction of image width
+}
+
 export type ProviderType = 'claude' | 'ollama';
 
 export interface ProviderConfig {
@@ -57,7 +92,7 @@ export interface LLMService {
     plan: SelectionPlan,
     sliceLabels: string[],
     surveyMode?: boolean,
-  ): Promise<string>;
+  ): Promise<AnalysisResult>;
   sendFollowUp(
     conversationHistory: ChatMessage[],
     metadata: StudyMetadata,
