@@ -346,35 +346,57 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
 function agentToolLabel(name?: string): string {
   switch (name) {
-    case 'view_slices': return 'Viewed slices';
-    case 'draw_circle': return 'Circled finding';
+    case 'view_slices': return 'Reviewed batch';
+    case 'compare_slices': return 'Compared slices';
+    case 'draw_circle': return 'Marked finding';
     case 'navigate_to_slice': return 'Navigated viewer';
     case 'set_window_level': return 'Adjusted window';
     default: return name ?? 'Step';
   }
 }
 
-/** Compact live trace of the agent's tool calls. */
+/**
+ * Live trace of the agent's work: what it is thinking as well as which tool it
+ * called, so the user can follow the reasoning rather than just the actions.
+ */
 function AgentTrace({ steps, active }: { steps: AgentStepEvent[]; active: boolean }) {
-  const toolSteps = steps.filter((s) => s.type === 'tool-call');
+  const modelStep = steps.find((s) => s.type === 'model');
+  const visible = steps.filter((s) => s.type === 'tool-call' || (s.type === 'text' && s.text));
+
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 space-y-1.5">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
-        {active ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
-        {active ? 'Agent working…' : 'Agent trace'}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
+          {active ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
+          {active ? 'Agent working…' : 'Agent trace'}
+        </div>
+        {modelStep?.detail && (
+          <span className="text-[10px] text-neutral-500 truncate max-w-[55%]" title={modelStep.detail}>
+            {modelStep.detail.split(' · ')[0]}
+          </span>
+        )}
       </div>
-      {toolSteps.length === 0 && active && (
+
+      {visible.length === 0 && active && (
         <div className="text-xs text-neutral-500">Reviewing the study…</div>
       )}
-      {toolSteps.map((s, i) => (
-        <div key={i} className="flex items-start gap-1.5 text-xs">
-          <span className="mt-1 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
-          <span className="text-neutral-300">
-            <span className="font-medium text-blue-300">{agentToolLabel(s.toolName)}</span>
-            {s.detail ? <span className="text-neutral-500"> · {s.detail}</span> : null}
-          </span>
-        </div>
-      ))}
+
+      {visible.map((s, i) =>
+        s.type === 'text' ? (
+          <div key={i} className="flex items-start gap-1.5 text-xs">
+            <span className="mt-1 w-1.5 h-1.5 rounded-full bg-neutral-600 shrink-0" />
+            <span className="text-neutral-400 italic whitespace-pre-wrap">{s.text}</span>
+          </div>
+        ) : (
+          <div key={i} className="flex items-start gap-1.5 text-xs">
+            <span className="mt-1 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+            <span className="text-neutral-300">
+              <span className="font-medium text-blue-300">{agentToolLabel(s.toolName)}</span>
+              {s.detail ? <span className="text-neutral-500"> · {s.detail}</span> : null}
+            </span>
+          </div>
+        ),
+      )}
     </div>
   );
 }

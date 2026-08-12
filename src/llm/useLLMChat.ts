@@ -283,6 +283,8 @@ export function useLLMChat(
         metadata,
         history,
         bridge,
+        isNewAnalysis,
+        surveyMode: surveyModeRef.current,
         onStep: (e) => setAgentSteps((prev) => [...prev, e]),
         signal: controller.signal,
       });
