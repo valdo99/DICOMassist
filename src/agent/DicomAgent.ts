@@ -9,6 +9,73 @@ import { logger } from '../utils/logger';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5';
 const MAX_STEPS = 12;
+// Anthropic caps a request at 100 images. The agent calls view_slices repeatedly
+// and every batch persists in history, so we keep only the most recent images
+// (well under the cap) and replace older batches with a text placeholder — the
+// agentic equivalent of context editing.
+const MAX_IMAGES_IN_CONTEXT = 60;
+
+/**
+ * Strip images from all but the most recent view_slices tool results (keeping
+ * the total under MAX_IMAGES_IN_CONTEXT). Older batches become a short text note
+ * so the model still knows what it saw and can re-view if needed. Idempotent.
+ */
+function pruneOldImages(messages: ModelMessage[]): ModelMessage[] {
+  const isImagePart = (v: unknown) => {
+    const t = (v as { type?: string })?.type;
+    return t === 'file' || t === 'image' || t === 'media';
+  };
+
+  // Collect image-bearing view_slices results, oldest → newest.
+  const positions: Array<{ mi: number; pi: number; count: number }> = [];
+  messages.forEach((m, mi) => {
+    if (m.role !== 'tool' || !Array.isArray(m.content)) return;
+    (m.content as Array<Record<string, unknown>>).forEach((part, pi) => {
+      if (part?.type !== 'tool-result' || part.toolName !== 'view_slices') return;
+      const output = part.output as { type?: string; value?: unknown[] } | undefined;
+      if (output?.type === 'content' && Array.isArray(output.value)) {
+        const count = output.value.filter(isImagePart).length;
+        if (count > 0) positions.push({ mi, pi, count });
+      }
+    });
+  });
+
+  // Keep newest batches within the budget; always keep at least the latest.
+  const keep = new Set<string>();
+  let total = 0;
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const p = positions[i];
+    if (keep.size === 0 || total + p.count <= MAX_IMAGES_IN_CONTEXT) {
+      keep.add(`${p.mi}:${p.pi}`);
+      total += p.count;
+    }
+  }
+  const strip = positions.filter((p) => !keep.has(`${p.mi}:${p.pi}`));
+  if (strip.length === 0) return messages;
+
+  const out = messages.slice();
+  const touched = new Map<number, Array<Record<string, unknown>>>();
+  for (const p of strip) {
+    if (!touched.has(p.mi)) touched.set(p.mi, (out[p.mi].content as Array<Record<string, unknown>>).slice());
+    const content = touched.get(p.mi)!;
+    const part = { ...content[p.pi] } as Record<string, unknown>;
+    const output = part.output as { value?: Array<Record<string, unknown>> };
+    const label = (output.value ?? [])
+      .filter((v) => v?.type === 'text')
+      .map((v) => v.text as string)
+      .join(' ');
+    part.output = {
+      type: 'text',
+      value: `${label} [${p.count} slice image${p.count === 1 ? '' : 's'} omitted to save context — call view_slices again to see them]`.trim(),
+    };
+    content[p.pi] = part;
+  }
+  for (const [mi, content] of touched) {
+    out[mi] = { ...(out[mi] as Record<string, unknown>), content } as ModelMessage;
+  }
+  logger.log(`[Agent] pruned images from ${strip.length} old view(s); keeping ~${total} in context`);
+  return out;
+}
 
 export interface RunAgentParams {
   apiKey: string;
@@ -59,6 +126,8 @@ export async function runDicomAgent(params: RunAgentParams): Promise<RunAgentRes
       messages,
       tools,
       stopWhen: stepCountIs(MAX_STEPS),
+      // Keep the number of images sent per step under Anthropic's 100-image cap.
+      prepareStep: ({ messages: stepMessages }) => ({ messages: pruneOldImages(stepMessages) }),
       abortSignal: signal,
       onStepFinish: (step) => {
         if (step.text && step.text.trim()) {
