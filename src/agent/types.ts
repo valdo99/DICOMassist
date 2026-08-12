@@ -27,11 +27,13 @@ export interface AgentBridge {
   clearCircles(): void;
 }
 
-/** A step the agent took, surfaced to the UI for the pipeline/trace view. */
+/** A step the agent took, surfaced to the UI for the live trace. */
 export interface AgentStepEvent {
-  type: 'text' | 'tool-call' | 'tool-result';
+  type: 'text' | 'tool-call' | 'tool-result' | 'model';
   /** Tool name for tool events. */
   toolName?: string;
   /** Short human-readable summary for the trace UI. */
   detail?: string;
+  /** The agent's own narration/reasoning for this step. */
+  text?: string;
 }

@@ -27,6 +27,7 @@ import {
 import type { AnatomicalPlane } from '../dicom/orientationUtils';
 import type { StudyMetadata } from '../dicom/types';
 import EmptyViewportOverlay from './EmptyViewportOverlay';
+import { labelFirstGetTextLines } from './annotationText';
 import { extractViewportInfo } from './viewportUtils';
 import type { ViewportInfo } from './viewportUtils';
 
@@ -755,6 +756,13 @@ export default function ViewportGrid({
     const markerTool = toolGroup.getToolInstance(OrientationMarkerTool.toolName) as any;
     if (markerTool) {
       markerTool.configuration.overlayMarkerType = MARKER_TYPE_MAP[markerTypeRef.current];
+    }
+
+    // Show an ROI's label (what it is) instead of its area/mean statistics.
+    // Unlabeled hand-drawn ROIs still fall back to measurements.
+    const roiTool = toolGroup.getToolInstance(EllipticalROITool.toolName) as any;
+    if (roiTool) {
+      roiTool.configuration.getTextLines = labelFirstGetTextLines;
     }
 
     for (const id of viewportIds) {
