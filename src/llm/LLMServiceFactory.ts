@@ -1,5 +1,5 @@
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, LLMService, ViewportContext } from './types';
+import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, LLMService, ViewportContext, AnalysisResult, SliceCircle } from './types';
 import {
   buildSelectionSystemPrompt,
   buildSelectionUserPrompt,
@@ -19,6 +19,57 @@ function extractJson(text: string): string {
     return text.slice(braceStart, braceEnd + 1);
   }
   return text.trim();
+}
+
+function clamp01(n: number): number {
+  return Math.min(1, Math.max(0, n));
+}
+
+function normalizeCircle(raw: Record<string, unknown>): SliceCircle | null {
+  const image = Number(raw.image);
+  const cx = Number(raw.cx);
+  const cy = Number(raw.cy);
+  const radius = Number(raw.radius);
+  if (![image, cx, cy, radius].every(Number.isFinite)) return null;
+  return {
+    image: Math.round(image),
+    cx: clamp01(cx),
+    cy: clamp01(cy),
+    // keep the circle sane: never smaller than a couple px, never over half the image
+    radius: Math.min(0.5, Math.max(0.01, radius)),
+    label: String(raw.label ?? 'Finding').trim().slice(0, 40) || 'Finding',
+  };
+}
+
+/**
+ * Split a Call-2 response into its prose and any annotation circles. The model
+ * is asked to append a fenced ```annotations``` (or ```json) block containing
+ * { "circles": [...] }. We parse it out and strip it from the displayed text.
+ * Missing/invalid blocks degrade to no annotations — never throws.
+ */
+function extractAnnotations(text: string): AnalysisResult {
+  const fenceRe = /```(?:annotations|json)?\s*(\{[\s\S]*?\})\s*```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(text)) !== null) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(match[1]);
+    } catch {
+      continue; // not JSON — keep scanning
+    }
+    const list = Array.isArray(parsed.circles)
+      ? parsed.circles
+      : Array.isArray(parsed.annotations)
+        ? parsed.annotations
+        : null;
+    if (!list) continue; // some other JSON block — leave it, keep scanning
+    const annotations = (list as Record<string, unknown>[])
+      .map(normalizeCircle)
+      .filter((c): c is SliceCircle => c !== null);
+    const cleaned = (text.slice(0, match.index) + text.slice(match.index + match[0].length)).trim();
+    return { text: cleaned, annotations };
+  }
+  return { text: text.trim(), annotations: [] };
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -127,7 +178,7 @@ class ClaudeService implements LLMService {
     plan: SelectionPlan,
     sliceLabels: string[],
     surveyMode?: boolean,
-  ): Promise<string> {
+  ): Promise<AnalysisResult> {
     const imageContents = await Promise.all(
       images.map(async (blob, i) => [
         {
@@ -153,12 +204,13 @@ class ClaudeService implements LLMService {
       },
     ];
 
-    return this.callClaude({
+    const raw = await this.callClaude({
       system: buildAnalysisSystemPrompt(surveyMode),
       messages: [{ role: 'user', content }],
       temperature: 0,
       maxTokens: 4096,
     });
+    return extractAnnotations(raw);
   }
 
   async sendFollowUp(conversationHistory: ChatMessage[], metadata: StudyMetadata): Promise<string> {
@@ -239,19 +291,20 @@ class OllamaService implements LLMService {
     plan: SelectionPlan,
     sliceLabels: string[],
     surveyMode?: boolean,
-  ): Promise<string> {
+  ): Promise<AnalysisResult> {
     const base64Images = await Promise.all(images.map(blobToBase64));
     const manifest = sliceLabels.map((l, i) => `  ${i + 1}. ${l}`).join('\n');
     const userContent =
       `IMAGE MANIFEST (${sliceLabels.length} images, in sequential order):\n${manifest}\n\nThe images are provided in the exact order listed above.\n\n` +
       buildAnalysisUserPrompt(metadata, clinicalHint, plan, sliceLabels);
 
-    return this.callOllama({
+    const raw = await this.callOllama({
       model: this.visionModel,
       system: buildAnalysisSystemPrompt(surveyMode),
       userContent,
       images: base64Images,
     });
+    return extractAnnotations(raw);
   }
 
   async sendFollowUp(conversationHistory: ChatMessage[], metadata: StudyMetadata): Promise<string> {

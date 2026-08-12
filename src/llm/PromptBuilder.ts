@@ -317,8 +317,47 @@ export function buildAnalysisSystemPrompt(surveyMode?: boolean): string {
     '   making a definitive call. False confidence is worse than admitted',
     '   uncertainty.',
     '',
+    ...buildAnnotationInstructions(),
+    '',
     ...(surveyMode ? buildSurveyResponseFormat() : buildStandardResponseFormat()),
   ].join('\n');
+}
+
+/**
+ * Instructions for the optional machine-readable annotation block. The model
+ * marks localizable findings with a circle, exactly like a radiologist circling
+ * a region on the image. The block is parsed out and stripped before display.
+ */
+function buildAnnotationInstructions(): string[] {
+  return [
+    '## MARKING FINDINGS ON THE IMAGE',
+    '',
+    'After your written analysis, if — and ONLY if — you identified findings that',
+    'are visible at a specific location on an image, append ONE fenced code block',
+    'that circles each finding (like a radiologist marking the image):',
+    '',
+    '```annotations',
+    '{"circles":[',
+    '  {"image":3,"cx":0.52,"cy":0.41,"radius":0.08,"label":"ACL tear"}',
+    ']}',
+    '```',
+    '',
+    'Coordinate rules — READ CAREFULLY:',
+    '- "image": the 1-based number of the image (in the order provided) that best',
+    '  shows the finding. Use only image numbers from the manifest.',
+    '- "cx","cy": the CENTER of the finding as fractions of that image, where',
+    '  cx=0 is the LEFT edge, cx=1 the RIGHT edge, cy=0 the TOP edge, cy=1 the',
+    '  BOTTOM edge. (So a finding in the upper-right quadrant is ~cx 0.7, cy 0.3.)',
+    '- "radius": radius of the circle as a fraction of image WIDTH. Keep it snug',
+    '  around the finding (typically 0.03–0.15), not around the whole organ.',
+    '- "label": a 1–3 word name matching the finding in your prose.',
+    '- Only circle findings you can point to a SPECIFIC spot for. Omit diffuse or',
+    '  uncertain findings. Maximum 6 circles.',
+    '- If nothing is localizable, OMIT the block entirely. NEVER invent coordinates.',
+    '',
+    'The annotations block is machine-read and stripped from what the user sees, so',
+    'keep your prose self-contained (still cite the slice number in the text).',
+  ];
 }
 
 export function buildAnalysisUserPrompt(
@@ -385,6 +424,7 @@ export function buildAnalysisUserPrompt(
   lines.push('');
   lines.push('When referencing findings, cite the series and slice number (e.g., "Series #3 Slice 45/187") so the reader can navigate to it in the viewer.');
   lines.push('IMPORTANT: Only reference slice numbers from the list above. Do NOT invent or guess slice numbers that were not provided.');
+  lines.push('If any finding is visible at a specific location, remember to append the ```annotations``` block described in the instructions so it can be circled on the image.');
 
   return lines.join('\n');
 }
