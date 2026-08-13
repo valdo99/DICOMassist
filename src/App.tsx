@@ -11,6 +11,7 @@ import LoadingOverlay from './viewer/LoadingOverlay';
 import MetadataPanel from './ui/MetadataPanel';
 import SeriesBrowser from './ui/SeriesBrowser';
 import ChatSidebar, { type ChatSidebarHandle } from './ui/ChatSidebar';
+import FindingsPanel, { type FindingRef } from './ui/FindingsPanel';
 import SettingsPanel from './ui/SettingsPanel';
 import DisclaimerModal from './ui/DisclaimerModal';
 import LandingScreen from './ui/LandingScreen';
@@ -61,11 +62,20 @@ export default function App() {
   const [flipV, setFlipV] = useState(false);
   const [cineEnabled, setCineEnabled] = useState(false);
   const [showAiCircles, setShowAiCircles] = useState(true);
+  const [showFindings, setShowFindings] = useState(false);
+  // Transient: drives the ~3s on-viewport circle emphasis after a jump.
+  const [focusedFindingUid, setFocusedFindingUid] = useState<string | null>(null);
+  // Persistent: which Findings-panel row is the current one (until another is
+  // picked / the panel closes / findings clear). Kept separate so the row stays
+  // highlighted after the viewer emphasis fades.
+  const [selectedFindingUid, setSelectedFindingUid] = useState<string | null>(null);
   const [agentAnnotations, setAgentAnnotations] = useState<ResolvedCircleAnnotation[]>([]);
   const [restoring, setRestoring] = useState<{ label: string; loaded: number; total: number } | null>(null);
   const resetRef = useRef<(() => void) | null>(null);
   const chatSidebarRef = useRef<ChatSidebarHandle>(null);
   const autoRestoredRef = useRef(false);
+  // Auto-clears a focused finding's highlight after a jump; reset on each jump.
+  const focusTimerRef = useRef<number | null>(null);
   // Monotonic token identifying the current "load intent". Bumped on every new
   // load, restore, cancel, and close, so a slow async load/restore/save can
   // detect that it has been superseded and skip its state writes. Fixes the
@@ -252,6 +262,9 @@ export default function App() {
     setShowChat(false);
     setShowMetadata(false);
     setShowSeriesBrowser(false);
+    setShowFindings(false);
+    setFocusedFindingUid(null);
+    setSelectedFindingUid(null);
     clearChat();
     studyStore.setLastOpenedId(null);
     try {
@@ -383,10 +396,12 @@ export default function App() {
     }
   }, [status]);
 
-  // Auto-open chat when analysis completes
+  // Auto-open chat when analysis completes. Close metadata so it and chat stay
+  // mutually exclusive (they're both right-docked) rather than stacking.
   useEffect(() => {
     if (messages.length > 0 && status === 'idle') {
       setShowChat(true);
+      setShowMetadata(false);
     }
   }, [messages.length, status]);
 
@@ -476,10 +491,13 @@ export default function App() {
   const navigateTargetRef = useRef<{ instanceNumber: number; imageId: string; seriesNumber: string } | null>(null);
 
   const handleNavigateToSlice = useCallback((mapping: SliceMapping) => {
-    if (!studyMetadata || !currentPlan) return;
+    // No currentPlan on the agent path — annotations carry their own
+    // seriesNumber, so only studyMetadata is required to navigate.
+    if (!studyMetadata) return;
 
     // Use the mapping's seriesNumber (multi-series aware) to find the correct series
-    const seriesNum = mapping.seriesNumber || currentPlan.targetSeries;
+    const seriesNum = mapping.seriesNumber || currentPlan?.targetSeries;
+    if (!seriesNum) return;
     const targetSeries = studyMetadata.series.find(
       (s) => String(s.seriesNumber) === seriesNum,
     );
@@ -505,6 +523,30 @@ export default function App() {
     // Already on the correct series — scroll directly
     scrollToSlice(mapping.instanceNumber, mapping.imageId, targetSeries);
   }, [studyMetadata, currentPlan, activeSeriesUID]);
+
+  // Jump to a marked finding and emphasise its circle. Shared by the agent
+  // trace ("Marked finding" links) and the Findings panel. Ensures circles are
+  // visible, scrolls to the slice, and focuses the specific circle for a short
+  // window (focus is applied inside the draw pass, so it survives the redraws
+  // that follow a series switch).
+  const handleFocusFinding = useCallback((finding: FindingRef) => {
+    setShowAiCircles(true);
+    setFocusedFindingUid(finding.uid);
+    setSelectedFindingUid(finding.uid);
+    handleNavigateToSlice({
+      imageIndex: 0,
+      instanceNumber: finding.instanceNumber,
+      imageId: finding.imageId,
+      zPosition: 0,
+      label: finding.label,
+      seriesNumber: finding.seriesNumber,
+    });
+    if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => {
+      setFocusedFindingUid(null);
+      focusTimerRef.current = null;
+    }, 3000);
+  }, [handleNavigateToSlice]);
 
   // After a series switch triggered by slice navigation, scroll to the target slice
   useEffect(() => {
@@ -537,22 +579,44 @@ export default function App() {
   // settle so the target slice's viewport is ready.
   // Circles come from either the legacy pipeline (Ollama) or the agent path
   // (Claude); whichever is populated is the active set.
+  // Pick the active path's set by provider, not by "whichever is non-empty":
+  // Claude runs the agent (agentAnnotations), Ollama the legacy pipeline. A
+  // stale set left by the other provider must never shadow the active one after
+  // a provider switch (bridge.clearCircles only empties agentAnnotations).
   const annotations = useMemo(
-    () => (pipeline?.annotations && pipeline.annotations.length > 0 ? pipeline.annotations : agentAnnotations),
-    [pipeline?.annotations, agentAnnotations],
+    () => (providerConfig.provider === 'claude' ? agentAnnotations : pipeline?.annotations ?? []),
+    [providerConfig.provider, pipeline?.annotations, agentAnnotations],
   );
 
   useEffect(() => {
     const anns = showAiCircles ? annotations : [];
     // drawCircleAnnotations clears prior AI circles then redraws, so it's
     // idempotent. Two passes cover the case where a series switch is still
-    // setting up the stack viewport on the first pass.
+    // setting up the stack viewport on the first pass. focusedFindingUid is
+    // applied inside the draw, so a focused circle stays emphasised across both.
     const timers = [
-      setTimeout(() => drawCircleAnnotations(anns), 300),
-      setTimeout(() => drawCircleAnnotations(anns), 900),
+      setTimeout(() => drawCircleAnnotations(anns, { focusedUid: focusedFindingUid }), 300),
+      setTimeout(() => drawCircleAnnotations(anns, { focusedUid: focusedFindingUid }), 900),
     ];
     return () => timers.forEach(clearTimeout);
-  }, [annotations, imageIds, showAiCircles]);
+  }, [annotations, imageIds, showAiCircles, focusedFindingUid]);
+
+  // When the annotation set empties, drop stale focus/selection. Don't close the
+  // panel here: a new analysis briefly empties the set before the agent redraws,
+  // and force-closing would make a panel the user kept open vanish mid-run. The
+  // panel shows its empty state and repopulates; genuine teardown (close study)
+  // closes it explicitly.
+  useEffect(() => {
+    if (annotations.length === 0) {
+      setFocusedFindingUid(null);
+      setSelectedFindingUid(null);
+    }
+  }, [annotations.length]);
+
+  // Clear the focus timer on unmount so it can't fire into a dead component.
+  useEffect(() => () => {
+    if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
+  }, []);
 
   // Legacy pipeline (Ollama): jump the viewer to the first circle when analysis
   // completes. The agent path drives navigation itself via its tools.
@@ -639,7 +703,12 @@ export default function App() {
   const handleToggleMetadata = useCallback(() => {
     if (!studyMetadata) return;
     setShowMetadata((v) => {
-      if (!v) setShowChat(false);
+      // Metadata is the odd panel out — opening it closes the other right-docked
+      // panels so it never stacks three-deep and crushes the viewer.
+      if (!v) {
+        setShowChat(false);
+        setShowFindings(false);
+      }
       return !v;
     });
   }, [studyMetadata]);
@@ -733,6 +802,14 @@ export default function App() {
         onFlipVToggle={() => setFlipV((v) => !v)}
         cineEnabled={cineEnabled}
         onCineToggle={() => setCineEnabled((v) => !v)}
+        findingsCount={annotations.length}
+        showFindings={showFindings}
+        onToggleFindings={() =>
+          setShowFindings((v) => {
+            if (!v) setShowMetadata(false); // findings coexists with chat, not metadata
+            return !v;
+          })
+        }
       />
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {showSeriesBrowser && studyMetadata && studyMetadata.series.length > 1 && (
@@ -765,10 +842,14 @@ export default function App() {
               className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-neutral-900/85 border border-blue-700/50 shadow-lg backdrop-blur-sm"
               title="AI-suggested regions — approximate visual guides, not measurements"
             >
-              <span className="flex items-center gap-1.5 text-xs font-medium text-blue-300">
+              <button
+                onClick={() => { setShowMetadata(false); setShowFindings(true); }}
+                title="View findings list"
+                className="flex items-center gap-1.5 text-xs font-medium text-blue-300 hover:text-blue-200 transition-colors"
+              >
                 <Circle className="w-3.5 h-3.5" />
                 {annotations.length} AI region{annotations.length === 1 ? '' : 's'} marked
-              </span>
+              </button>
               <span className="w-px h-3.5 bg-neutral-700" />
               <button
                 onClick={() => setShowAiCircles((v) => !v)}
@@ -784,6 +865,17 @@ export default function App() {
             total={prefetchProgress.total}
           />
         </div>
+        {showFindings && (
+          <FindingsPanel
+            annotations={annotations}
+            studyMetadata={studyMetadata}
+            focusedUid={selectedFindingUid}
+            showCircles={showAiCircles}
+            onToggleShowCircles={() => setShowAiCircles((v) => !v)}
+            onSelect={handleFocusFinding}
+            onClose={() => setShowFindings(false)}
+          />
+        )}
         {showMetadata && studyMetadata && (
           <MetadataPanel
             metadata={studyMetadata}
@@ -809,6 +901,7 @@ export default function App() {
             onClear={clearChat}
             onClose={() => setShowChat(false)}
             onNavigateToSlice={handleNavigateToSlice}
+            onOpenFinding={handleFocusFinding}
           />
         )}
       </div>

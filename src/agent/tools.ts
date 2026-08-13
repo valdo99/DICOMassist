@@ -37,6 +37,21 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
+/**
+ * The stable Cornerstone annotationUID for an AI circle. Shared so the agent's
+ * live trace can reconstruct the exact uid of a finding it drew (to open/focus
+ * that circle) and always match what `draw_circle` actually added — clamp the
+ * coordinates the same way the tool does, or the two uids drift apart.
+ */
+export function circleAnnotationUid(
+  seriesNumber: string | number,
+  instanceNumber: number,
+  cx: number,
+  cy: number,
+): string {
+  return `ai-circle-${seriesNumber}-${instanceNumber}-${Math.round(clamp01(cx) * 1000)}-${Math.round(clamp01(cy) * 1000)}`;
+}
+
 /** Which spatial axis varies as you scroll a series of the given plane. */
 function varyingAxisIndex(plane: string): 0 | 1 | 2 {
   if (plane === 'sagittal') return 0;
@@ -287,7 +302,7 @@ export function createDicomTools(metadata: StudyMetadata, bridge: AgentBridge, c
           return { ok: false, message: `Could not find Series #${seriesNumber} Slice ${instanceNumber} to draw on.` };
         }
         const ann: ResolvedCircleAnnotation = {
-          uid: `ai-circle-${series.seriesNumber}-${instanceNumber}-${Math.round(clamp01(cx) * 1000)}-${Math.round(clamp01(cy) * 1000)}`,
+          uid: circleAnnotationUid(series.seriesNumber, instanceNumber, cx, cy),
           imageId: slice.imageId,
           seriesNumber: String(series.seriesNumber),
           instanceNumber,

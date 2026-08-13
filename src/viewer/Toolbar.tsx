@@ -23,6 +23,7 @@ import {
   Triangle,
   Circle,
   FolderOpen,
+  Target,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -53,6 +54,9 @@ interface ToolbarProps {
   cineEnabled?: boolean;
   onCineToggle?: () => void;
   onCloseStudy?: () => void;
+  findingsCount?: number;
+  showFindings?: boolean;
+  onToggleFindings?: () => void;
 }
 
 const mainTools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = [
@@ -149,6 +153,7 @@ export default function Toolbar({
   flipV = false, onFlipVToggle,
   cineEnabled = false, onCineToggle,
   onCloseStudy,
+  findingsCount = 0, showFindings, onToggleFindings,
 }: ToolbarProps) {
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [markerOpen, setMarkerOpen] = useState(false);
@@ -415,6 +420,23 @@ export default function Toolbar({
         >
           <Search className="w-5 h-5" />
           <span className="hidden sm:inline">Analyze</span>
+        </button>
+      )}
+
+      {/* Findings list toggle — only when the AI has marked something */}
+      {onToggleFindings && findingsCount > 0 && (
+        <button
+          onClick={onToggleFindings}
+          title={`Findings (${findingsCount})`}
+          className={btnClass(showFindings)}
+        >
+          <span className="relative flex items-center">
+            <Target className="w-5 h-5" />
+            <span className="absolute -top-2 -right-2 min-w-[15px] h-[15px] px-1 rounded-full bg-blue-500 text-white text-[9px] font-bold flex items-center justify-center leading-none">
+              {findingsCount}
+            </span>
+          </span>
+          <span className="hidden sm:inline">Findings</span>
         </button>
       )}
 

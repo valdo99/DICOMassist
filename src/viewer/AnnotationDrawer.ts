@@ -113,19 +113,58 @@ export function clearAiAnnotations(renderingEngineId = 'dicomRenderingEngine'): 
   }
 }
 
+// The circle currently carrying Cornerstone's "selected" styling. Tracked so we
+// can explicitly deselect it when focus moves or clears: removeAnnotation (via
+// clearAiAnnotations) does NOT purge Cornerstone's global selection set, so a
+// re-added circle with the same uid would otherwise stay selected forever.
+let focusedAnnotationUid: string | null = null;
+
+/**
+ * Emphasise a single circle so a "jump to this finding" action is visible: it
+ * gets Cornerstone's selected styling plus the `highlighted` flag (a bolder
+ * outline). Because focus is applied here — inside the draw pass — it survives
+ * the redraw passes that fire after a series switch, unlike a one-shot select
+ * that a later `clearAiAnnotations` → re-add would wipe. Passing `null` (or a
+ * uid whose slice isn't loaded) clears the previous focus back to plain.
+ */
+function focusAnnotation(focusedUid: string | null): void {
+  const next = focusedUid && aiAnnotationUids.has(focusedUid) ? focusedUid : null;
+  // Return the previously-focused circle to plain styling when focus changes.
+  if (focusedAnnotationUid && focusedAnnotationUid !== next) {
+    try {
+      csAnnotation.selection.deselectAnnotation(focusedAnnotationUid);
+    } catch {
+      /* already gone — nothing to clear */
+    }
+  }
+  focusedAnnotationUid = next;
+  if (!next) return;
+  try {
+    // preserveSelected = false → this circle becomes the sole selection.
+    csAnnotation.selection.setAnnotationSelected(next, true, false);
+  } catch {
+    /* selection API unavailable / annotation gone — highlight flag still applies */
+  }
+}
+
 /**
  * Draw the given circles on whichever stack viewport currently holds each
  * slice. Existing AI circles are cleared first, so calling this with `[]` is a
  * clean "remove all AI circles". Circles whose series is not currently loaded
  * are skipped (they render once the user navigates to that series and this runs
- * again). Returns the number of circles actually drawn.
+ * again). `focusedUid` emphasises one circle (see focusAnnotation). Returns the
+ * number of circles actually drawn.
  */
 export function drawCircleAnnotations(
   annotations: ResolvedCircleAnnotation[],
-  renderingEngineId = 'dicomRenderingEngine',
+  opts: { focusedUid?: string | null; renderingEngineId?: string } = {},
 ): number {
+  const { focusedUid = null, renderingEngineId = 'dicomRenderingEngine' } = opts;
   clearAiAnnotations(renderingEngineId);
-  if (annotations.length === 0) return 0;
+  if (annotations.length === 0) {
+    focusAnnotation(null); // release any tracked selection so it can't linger
+    return 0;
+  }
 
   const engine = getRenderingEngine(renderingEngineId);
   if (!engine) return 0;
@@ -146,7 +185,7 @@ export function drawCircleAnnotations(
     const camera = viewport.getCamera();
     const newAnnotation = {
       annotationUID: ann.uid,
-      highlighted: false,
+      highlighted: ann.uid === focusedUid,
       invalidated: true,
       isLocked: false,
       isVisible: true,
@@ -180,6 +219,9 @@ export function drawCircleAnnotations(
       logger.warn('[AnnotationDrawer] Failed to add annotation', err);
     }
   }
+
+  // Apply focus before the render so the selected styling paints in this pass.
+  focusAnnotation(focusedUid);
 
   if (touchedViewports.size > 0) {
     try {
