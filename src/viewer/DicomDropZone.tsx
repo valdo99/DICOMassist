@@ -1,31 +1,12 @@
 import { useCallback, useRef, useState } from 'react';
 import { Upload, FolderOpen, FlaskConical, Loader2 } from 'lucide-react';
-import cornerstoneDICOMImageLoader from '@cornerstonejs/dicom-image-loader';
-import dicomParser from 'dicom-parser';
-import type { AnatomicalPlane } from '../dicom/orientationUtils';
-import { extractFileMetadata, buildStudyMetadata, type RawFileRecord } from '../dicom/MetadataExtractor';
-import type { StudyMetadata } from '../dicom/types';
+import { processDicomFiles, isDicomFile, type LoadResult } from '../dicom/loadDicomFiles';
 import { loadSampleData, type SampleDataProgress } from '../utils/sampleDataLoader';
 
-export interface LoadResult {
-  imageIds: string[];
-  primaryAxis: AnatomicalPlane;
-  studyMetadata: StudyMetadata;
-}
+export type { LoadResult };
 
 interface DicomDropZoneProps {
-  onFilesLoaded: (result: LoadResult) => void;
-}
-
-function isDicomFile(file: File): boolean {
-  const name = file.name.toLowerCase();
-  return name.endsWith('.dcm') || !name.includes('.');
-}
-
-function hasDicomPreamble(buffer: ArrayBuffer): boolean {
-  if (buffer.byteLength < 132) return false;
-  const view = new Uint8Array(buffer, 128, 4);
-  return view[0] === 0x44 && view[1] === 0x49 && view[2] === 0x43 && view[3] === 0x4d; // "DICM"
+  onFilesLoaded: (result: LoadResult, sourceFiles: File[]) => void;
 }
 
 async function getAllFiles(dataTransfer: DataTransfer): Promise<File[]> {
@@ -73,8 +54,6 @@ async function getAllFiles(dataTransfer: DataTransfer): Promise<File[]> {
   return files;
 }
 
-const PARSE_BATCH_SIZE = 20;
-
 export default function DicomDropZone({ onFilesLoaded }: DicomDropZoneProps) {
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -94,74 +73,13 @@ export default function DicomDropZone({ onFilesLoaded }: DicomDropZoneProps) {
       setLoadingPhase('reading');
       setProgress({ loaded: 0, total: files.length });
 
-      // Parse headers to extract metadata, then register with fileManager
-      const parsed: { file: File; meta: Omit<RawFileRecord, 'imageId'> }[] = [];
-
-      for (let start = 0; start < files.length; start += PARSE_BATCH_SIZE) {
-        const batch = files.slice(start, start + PARSE_BATCH_SIZE);
-        const results = await Promise.all(
-          batch.map(async (file) => {
-            try {
-              let dataSet: dicomParser.DataSet;
-              try {
-                const partial = await file.slice(0, 131072).arrayBuffer();
-                if (!file.name.toLowerCase().endsWith('.dcm') && !hasDicomPreamble(partial)) {
-                  return null; // Skip non-DICOM files without .dcm extension
-                }
-                dataSet = dicomParser.parseDicom(new Uint8Array(partial), { untilTag: 'x7fe00010' });
-              } catch {
-                // Partial read failed (e.g., large private tags) — retry with full file
-                const full = await file.arrayBuffer();
-                if (!file.name.toLowerCase().endsWith('.dcm') && !hasDicomPreamble(full)) {
-                  return null;
-                }
-                dataSet = dicomParser.parseDicom(new Uint8Array(full), { untilTag: 'x7fe00010' });
-              }
-
-              const meta = extractFileMetadata(dataSet);
-              return { file, meta };
-            } catch {
-              return {
-                file,
-                meta: {
-                  instanceNumber: 0,
-                  zPosition: 0,
-                  imagePositionPatient: [0, 0, 0] as [number, number, number],
-                  imageOrientationPatient: [1, 0, 0, 0, 1, 0] as [number, number, number, number, number, number],
-                  seriesInstanceUID: 'unknown',
-                  seriesNumber: 0,
-                  seriesDescription: '',
-                  modality: 'unknown',
-                  studyDescription: '',
-                },
-              };
-            }
-          })
-        );
-        for (const r of results) {
-          if (r) parsed.push(r);
-        }
-        setProgress({ loaded: Math.min(start + PARSE_BATCH_SIZE, files.length), total: files.length });
-      }
-
-      setLoadingPhase('sorting');
-
-      // Register files with fileManager and assign imageIds
-      const records: RawFileRecord[] = parsed.map((p) => {
-        const imageId = cornerstoneDICOMImageLoader.wadouri.fileManager.add(p.file);
-        return { ...p.meta, imageId };
+      const result = await processDicomFiles(files, (p) => {
+        setLoadingPhase(p.phase);
+        setProgress({ loaded: p.loaded, total: p.total });
       });
 
-      const studyMetadata = buildStudyMetadata(records);
-
-      const primarySeries = studyMetadata.series.find(
-        (s) => s.seriesInstanceUID === studyMetadata.primarySeriesUID
-      );
-      const imageIds = primarySeries ? primarySeries.slices.map((s) => s.imageId) : records.map((r) => r.imageId);
-      const primaryAxis: AnatomicalPlane = primarySeries?.anatomicalPlane ?? 'axial';
-
       setLoading(false);
-      onFilesLoaded({ imageIds, primaryAxis, studyMetadata });
+      if (result) onFilesLoaded(result, files);
     },
     [onFilesLoaded]
   );

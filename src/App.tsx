@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Circle, Eye, EyeOff } from 'lucide-react';
-import { imageLoader, getRenderingEngine } from '@cornerstonejs/core';
+import { Circle, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { imageLoader, getRenderingEngine, cache } from '@cornerstonejs/core';
 import type { IStackViewport } from '@cornerstonejs/core';
+import cornerstoneDICOMImageLoader from '@cornerstonejs/dicom-image-loader';
 import { initCornerstone } from './viewer/CornerstoneInit';
 import DicomDropZone, { type LoadResult } from './viewer/DicomDropZone';
 import ViewportGrid, { type ActiveToolName, type LayoutType, type OrientationMarkerType } from './viewer/ViewportGrid';
@@ -13,10 +14,13 @@ import ChatSidebar, { type ChatSidebarHandle } from './ui/ChatSidebar';
 import SettingsPanel from './ui/SettingsPanel';
 import DisclaimerModal from './ui/DisclaimerModal';
 import LandingScreen from './ui/LandingScreen';
+import RecentStudies from './ui/RecentStudies';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
 import type { ProviderConfig, ViewportContext, ResolvedCircleAnnotation } from './llm/types';
 import { useLLMChat, type SliceMapping } from './llm/useLLMChat';
+import { processDicomFiles } from './dicom/loadDicomFiles';
+import * as studyStore from './persistence/studyStore';
 import { drawCircleAnnotations } from './viewer/AnnotationDrawer';
 import type { AgentBridge } from './agent/types';
 import { logger } from './utils/logger';
@@ -58,8 +62,15 @@ export default function App() {
   const [cineEnabled, setCineEnabled] = useState(false);
   const [showAiCircles, setShowAiCircles] = useState(true);
   const [agentAnnotations, setAgentAnnotations] = useState<ResolvedCircleAnnotation[]>([]);
+  const [restoring, setRestoring] = useState<{ label: string; loaded: number; total: number } | null>(null);
   const resetRef = useRef<(() => void) | null>(null);
   const chatSidebarRef = useRef<ChatSidebarHandle>(null);
+  const autoRestoredRef = useRef(false);
+  // Monotonic token identifying the current "load intent". Bumped on every new
+  // load, restore, cancel, and close, so a slow async load/restore/save can
+  // detect that it has been superseded and skip its state writes. Fixes the
+  // cancel-then-pick-another and save-after-close races.
+  const loadEpochRef = useRef(0);
 
   // Bridge the agent's tools use to drive the viewer. Rebuilt only when the
   // study changes; the state setters it closes over are stable.
@@ -141,16 +152,130 @@ export default function App() {
     initCornerstone().then(() => setReady(true));
   }, []);
 
-  const handleFilesLoaded = useCallback((result: LoadResult) => {
+  // Push a loaded/restored study into the viewer state. Shared by fresh loads
+  // (drop zone) and local-storage restores so both behave identically. Resets
+  // per-view transform/layout/tool state so the new study never inherits the
+  // previous one's inverted/flipped/cine/MPR view after an in-session switch.
+  const applyLoadResult = useCallback((result: LoadResult) => {
     setImageIds(result.imageIds);
     setPrimaryAxis(result.primaryAxis);
     setOrientation(result.primaryAxis);
     setStudyMetadata(result.studyMetadata);
     setActiveSeriesUID(result.studyMetadata.primarySeriesUID);
-    if (result.studyMetadata.series.length > 1) {
-      setShowSeriesBrowser(true);
-    }
+    setShowSeriesBrowser(result.studyMetadata.series.length > 1);
+    setInvert(false);
+    setFlipH(false);
+    setFlipV(false);
+    setCineEnabled(false);
+    setLayout('1x1');
+    setActiveTool('WindowLevel');
   }, []);
+
+  const handleFilesLoaded = useCallback(
+    (result: LoadResult, sourceFiles: File[]) => {
+      const epoch = ++loadEpochRef.current;
+      applyLoadResult(result);
+
+      // Persist the raw bytes locally so a refresh restores this study without
+      // a re-drop. Runs in the background; failure (e.g. quota) is non-fatal.
+      const m = result.studyMetadata;
+      const label =
+        m.studyDescription?.trim() ||
+        m.series[0]?.seriesDescription?.trim() ||
+        (m.modality && m.modality !== 'unknown' ? `${m.modality} study` : 'DICOM study');
+      studyStore
+        .saveStudy(sourceFiles, {
+          label,
+          modality: m.modality,
+          studyDescription: m.studyDescription,
+          seriesCount: m.series.length,
+          seriesUIDs: m.series.map((s) => s.seriesInstanceUID),
+        })
+        .then((saved) => {
+          // Skip if the user has since closed this study or loaded another —
+          // otherwise a late save would re-point auto-restore at a closed study.
+          if (loadEpochRef.current === epoch) studyStore.setLastOpenedId(saved.id);
+        })
+        .catch((err) => logger.warn('[DICOMassist] Could not save study locally:', err));
+    },
+    [applyLoadResult],
+  );
+
+  // Reload a persisted study's bytes from IndexedDB and run them back through
+  // the normal pipeline. Each call claims a fresh epoch; if a newer load/restore/
+  // cancel/close supersedes it, its async continuation bails without touching
+  // state — so a cancelled or stale restore can never clobber the active study.
+  const restoreStudy = useCallback(
+    async (meta: studyStore.StoredStudyMeta) => {
+      const epoch = ++loadEpochRef.current;
+      const superseded = () => loadEpochRef.current !== epoch;
+      setRestoring({ label: meta.label, loaded: 0, total: meta.fileCount });
+      try {
+        const files = await studyStore.loadStudyFiles(meta.id, (loaded, total) => {
+          if (!superseded()) setRestoring({ label: meta.label, loaded, total });
+        });
+        if (superseded()) return;
+        const result = await processDicomFiles(files);
+        if (superseded()) return;
+        if (!result) throw new Error('restored study contained no readable DICOM files');
+        applyLoadResult(result);
+        studyStore.setLastOpenedId(meta.id);
+        studyStore.touchStudy(meta.id).catch(() => {});
+      } catch (err) {
+        if (!superseded()) {
+          logger.warn('[DICOMassist] Could not restore study:', err);
+          studyStore.setLastOpenedId(null);
+        }
+      } finally {
+        if (!superseded()) setRestoring(null);
+      }
+    },
+    [applyLoadResult],
+  );
+
+  const handleCancelRestore = useCallback(() => {
+    loadEpochRef.current++; // supersede the in-flight restore
+    setRestoring(null);
+    studyStore.setLastOpenedId(null);
+  }, []);
+
+  // Close the current study and return to the landing/library. The study stays
+  // in local storage (still listed under "Recent studies"); only the auto-open
+  // pointer is cleared so a refresh won't reopen it. Purges Cornerstone's caches
+  // so repeated close/reopen cycles don't accumulate retained file bytes.
+  const handleCloseStudy = useCallback(() => {
+    loadEpochRef.current++; // supersede any in-flight save/restore
+    setImageIds([]);
+    setStudyMetadata(null);
+    setActiveSeriesUID('');
+    setAgentAnnotations([]);
+    setShowChat(false);
+    setShowMetadata(false);
+    setShowSeriesBrowser(false);
+    clearChat();
+    studyStore.setLastOpenedId(null);
+    try {
+      cache.purgeCache();
+      cornerstoneDICOMImageLoader.wadouri.fileManager.purge();
+    } catch { /* best-effort cleanup */ }
+  }, [clearChat]);
+
+  // On first ready render, auto-restore the last-opened study (if any) and
+  // sweep any orphaned file records left by an interrupted save.
+  useEffect(() => {
+    if (!ready || autoRestoredRef.current) return;
+    autoRestoredRef.current = true;
+    studyStore.pruneOrphans().catch(() => {});
+    const id = studyStore.getLastOpenedId();
+    if (!id) return;
+    studyStore
+      .getStudyMeta(id)
+      .then((meta) => {
+        if (meta) restoreStudy(meta);
+        else studyStore.setLastOpenedId(null);
+      })
+      .catch(() => {});
+  }, [ready, restoreStudy]);
 
   // Prefetch all images after they're set
   useEffect(() => {
@@ -546,9 +671,35 @@ export default function App() {
     return (
       <div className="h-full overflow-y-auto">
         {!disclaimerAccepted && <DisclaimerModal onAccept={handleAcceptDisclaimer} />}
-        <LandingScreen>
-          <DicomDropZone onFilesLoaded={handleFilesLoaded} />
-        </LandingScreen>
+        {restoring ? (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-black text-zinc-300 gap-4 p-8">
+            <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
+            <p className="text-sm text-zinc-400">
+              Restoring <span className="text-zinc-200">{restoring.label}</span>…
+            </p>
+            <div className="w-64 h-2 bg-neutral-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-500 transition-all duration-100"
+                style={{
+                  width: `${restoring.total > 0 ? Math.round((restoring.loaded / restoring.total) * 100) : 0}%`,
+                }}
+              />
+            </div>
+            <p className="text-xs text-zinc-600">
+              {restoring.loaded} / {restoring.total} files from local storage
+            </p>
+            <button
+              onClick={handleCancelRestore}
+              className="mt-1 text-xs text-zinc-600 hover:text-zinc-300 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <LandingScreen recent={<RecentStudies onRestore={restoreStudy} />}>
+            <DicomDropZone onFilesLoaded={handleFilesLoaded} />
+          </LandingScreen>
+        )}
       </div>
     );
   }
@@ -561,6 +712,7 @@ export default function App() {
         layout={layout}
         onLayoutChange={setLayout}
         onReset={handleReset}
+        onCloseStudy={handleCloseStudy}
         showSeriesBrowser={showSeriesBrowser}
         onToggleSeriesBrowser={studyMetadata && studyMetadata.series.length > 1 ? () => setShowSeriesBrowser((v) => !v) : undefined}
         showMetadata={showMetadata}

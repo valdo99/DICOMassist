@@ -22,6 +22,7 @@ import {
   ChevronDown,
   Triangle,
   Circle,
+  FolderOpen,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -51,6 +52,7 @@ interface ToolbarProps {
   onFlipVToggle?: () => void;
   cineEnabled?: boolean;
   onCineToggle?: () => void;
+  onCloseStudy?: () => void;
 }
 
 const mainTools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = [
@@ -146,6 +148,7 @@ export default function Toolbar({
   flipH = false, onFlipHToggle,
   flipV = false, onFlipVToggle,
   cineEnabled = false, onCineToggle,
+  onCloseStudy,
 }: ToolbarProps) {
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [markerOpen, setMarkerOpen] = useState(false);
@@ -182,6 +185,21 @@ export default function Toolbar({
 
   return (
     <div className="relative z-20 flex items-center gap-1 px-3 py-2 bg-neutral-900 border-b border-neutral-800 overflow-x-auto whitespace-nowrap">
+      {/* Close current study — back to the library / landing screen */}
+      {onCloseStudy && (
+        <>
+          <button
+            onClick={onCloseStudy}
+            title="Close study — back to library"
+            className={btnClass()}
+          >
+            <FolderOpen className="w-5 h-5" />
+            <span className="hidden sm:inline">Studies</span>
+          </button>
+          <div className="w-px h-6 bg-neutral-700 mx-1" />
+        </>
+      )}
+
       {/* Series browser toggle — far left */}
       {onToggleSeriesBrowser && (
         <>
