@@ -27,6 +27,19 @@ export interface AgentBridge {
   clearCircles(): void;
 }
 
+/**
+ * A finding the agent marked, resolved to a concrete slice — enough for the UI
+ * to jump to it and focus the exact circle. Carried on the `draw_circle` step
+ * so the live trace can turn "Marked finding" into a clickable link.
+ */
+export interface AgentFindingRef {
+  uid: string;            // matches the drawn annotation's uid
+  seriesNumber: string;
+  instanceNumber: number;
+  imageId: string;
+  label: string;
+}
+
 /** A step the agent took, surfaced to the UI for the live trace. */
 export interface AgentStepEvent {
   type: 'text' | 'tool-call' | 'tool-result' | 'model';
@@ -36,4 +49,6 @@ export interface AgentStepEvent {
   detail?: string;
   /** The agent's own narration/reasoning for this step. */
   text?: string;
+  /** Present on a `draw_circle` step: the finding it marked, for click-to-open. */
+  finding?: AgentFindingRef;
 }

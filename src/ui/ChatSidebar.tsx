@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useImperativeHandle, forwardRef, useMemo } from 'react';
-import { X, Send, Trash2, AlertCircle, Loader2, ClipboardList, MessageSquare } from 'lucide-react';
+import { X, Send, Trash2, AlertCircle, Loader2, ClipboardList, MessageSquare, Crosshair } from 'lucide-react';
 import type { ChatMessage, SelectionPlan } from '../llm/types';
 import type { StudyMetadata } from '../dicom/types';
 import type { ChatStatus, PipelineState, SliceMapping } from '../llm/useLLMChat';
-import type { AgentStepEvent } from '../agent/types';
+import type { AgentStepEvent, AgentFindingRef } from '../agent/types';
 import { detectBodyPart, getChecklist, buildSurveyHint } from '../llm/anatomyChecklists';
 import PipelineView from './PipelineView';
 import AssistantMessage from './AssistantMessage';
@@ -29,6 +29,7 @@ interface ChatSidebarProps {
   onClear: () => void;
   onClose: () => void;
   onNavigateToSlice: (mapping: SliceMapping) => void;
+  onOpenFinding: (finding: AgentFindingRef) => void;
 }
 
 export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSidebar({
@@ -47,6 +48,7 @@ export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSide
   onClear,
   onClose,
   onNavigateToSlice,
+  onOpenFinding,
 }, ref) {
   const [input, setInput] = useState('');
   const [surveyActive, setSurveyActive] = useState(false);
@@ -179,7 +181,7 @@ export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSide
 
         {/* Agent tool-call trace (Claude agent path) */}
         {agentSteps.length > 0 && (
-          <AgentTrace steps={agentSteps} active={status === 'analyzing'} />
+          <AgentTrace steps={agentSteps} active={status === 'analyzing'} onOpenFinding={onOpenFinding} />
         )}
 
         {/* Plan preview card — inline, only during awaiting-confirmation */}
@@ -358,8 +360,17 @@ function agentToolLabel(name?: string): string {
 /**
  * Live trace of the agent's work: what it is thinking as well as which tool it
  * called, so the user can follow the reasoning rather than just the actions.
+ * A step that marked a finding is a link — click it to jump to that circle.
  */
-function AgentTrace({ steps, active }: { steps: AgentStepEvent[]; active: boolean }) {
+function AgentTrace({
+  steps,
+  active,
+  onOpenFinding,
+}: {
+  steps: AgentStepEvent[];
+  active: boolean;
+  onOpenFinding: (finding: AgentFindingRef) => void;
+}) {
   const modelStep = steps.find((s) => s.type === 'model');
   const visible = steps.filter((s) => s.type === 'tool-call' || (s.type === 'text' && s.text));
 
@@ -381,13 +392,37 @@ function AgentTrace({ steps, active }: { steps: AgentStepEvent[]; active: boolea
         <div className="text-xs text-neutral-500">Reviewing the study…</div>
       )}
 
-      {visible.map((s, i) =>
-        s.type === 'text' ? (
-          <div key={i} className="flex items-start gap-1.5 text-xs">
-            <span className="mt-1 w-1.5 h-1.5 rounded-full bg-neutral-600 shrink-0" />
-            <span className="text-neutral-400 italic whitespace-pre-wrap">{s.text}</span>
-          </div>
-        ) : (
+      {visible.map((s, i) => {
+        if (s.type === 'text') {
+          return (
+            <div key={i} className="flex items-start gap-1.5 text-xs">
+              <span className="mt-1 w-1.5 h-1.5 rounded-full bg-neutral-600 shrink-0" />
+              <span className="text-neutral-400 italic whitespace-pre-wrap">{s.text}</span>
+            </div>
+          );
+        }
+        // A marked finding is a link — jump to that circle on the viewer.
+        if (s.finding) {
+          const finding = s.finding;
+          return (
+            <button
+              key={i}
+              onClick={() => onOpenFinding(finding)}
+              title={`Open "${finding.label}" on the viewer`}
+              className="group flex items-start gap-1.5 text-xs w-full text-left rounded px-1 -mx-1 py-0.5 hover:bg-neutral-800/70 transition-colors"
+            >
+              <span className="mt-1 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+              <span className="text-neutral-300 flex-1 min-w-0">
+                <span className="font-medium text-blue-300 group-hover:text-blue-200 group-hover:underline">
+                  {agentToolLabel(s.toolName)}
+                </span>
+                {s.detail ? <span className="text-neutral-500"> · {s.detail}</span> : null}
+              </span>
+              <Crosshair className="w-3 h-3 mt-0.5 shrink-0 text-neutral-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </button>
+          );
+        }
+        return (
           <div key={i} className="flex items-start gap-1.5 text-xs">
             <span className="mt-1 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
             <span className="text-neutral-300">
@@ -395,8 +430,8 @@ function AgentTrace({ steps, active }: { steps: AgentStepEvent[]; active: boolea
               {s.detail ? <span className="text-neutral-500"> · {s.detail}</span> : null}
             </span>
           </div>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }

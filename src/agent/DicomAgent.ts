@@ -3,9 +3,9 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import type { StudyMetadata } from '../dicom/types';
 import type { ChatMessage } from '../llm/types';
 import { buildAgentSystemPrompt } from './systemPrompt';
-import { createDicomTools, createRunContext, sliceKey, type AgentRunContext } from './tools';
+import { createDicomTools, createRunContext, sliceKey, circleAnnotationUid, type AgentRunContext } from './tools';
 import { chooseModel, type ModelTier } from './modelRouter';
-import type { AgentBridge, AgentStepEvent } from './types';
+import type { AgentBridge, AgentStepEvent, AgentFindingRef } from './types';
 import { logger } from '../utils/logger';
 
 export const MAX_STEPS = 32;
@@ -310,6 +310,7 @@ export async function runDicomAgent(params: RunAgentParams): Promise<RunAgentRes
               type: 'tool-call',
               toolName: call.toolName,
               detail: summarizeToolCall(call.toolName, call.input),
+              finding: call.toolName === 'draw_circle' ? resolveFinding(metadata, call.input) : undefined,
             });
           }
         },
@@ -380,6 +381,27 @@ export async function runDicomAgent(params: RunAgentParams): Promise<RunAgentRes
     logger.groupEnd();
     throw err;
   }
+}
+
+/**
+ * Resolve a `draw_circle` tool call to the concrete finding it produced, so the
+ * trace can link straight to that circle. Reuses the same series lookup and uid
+ * formula as the tool itself, so the uid matches the annotation that was added.
+ * Returns undefined if the slice can't be resolved (nothing to open).
+ */
+function resolveFinding(metadata: StudyMetadata, input: unknown): AgentFindingRef | undefined {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const series = metadata.series.find((s) => String(s.seriesNumber) === String(i.seriesNumber));
+  const instanceNumber = Number(i.instanceNumber);
+  const slice = series?.slices.find((s) => s.instanceNumber === instanceNumber);
+  if (!series || !slice) return undefined;
+  return {
+    uid: circleAnnotationUid(series.seriesNumber, instanceNumber, Number(i.cx), Number(i.cy)),
+    seriesNumber: String(series.seriesNumber),
+    instanceNumber,
+    imageId: slice.imageId,
+    label: (typeof i.label === 'string' && i.label ? i.label : 'Finding').slice(0, 40),
+  };
 }
 
 function summarizeToolCall(toolName: string, input: unknown): string {
