@@ -2,9 +2,11 @@ import type { ReactNode } from 'react';
 
 interface LandingScreenProps {
   children: ReactNode;
+  /** Optional slot rendered between the drop zone and "How it works". */
+  recent?: ReactNode;
 }
 
-export default function LandingScreen({ children }: LandingScreenProps) {
+export default function LandingScreen({ children, recent }: LandingScreenProps) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-black text-zinc-300 p-8">
       <div className="max-w-2xl w-full">
@@ -23,6 +25,9 @@ export default function LandingScreen({ children }: LandingScreenProps) {
         <div className="h-[22rem] mb-10">
           {children}
         </div>
+
+        {/* Recent studies (rendered by RecentStudies when persisted studies exist) */}
+        {recent}
 
         {/* How it works */}
         <div className="mb-8">
