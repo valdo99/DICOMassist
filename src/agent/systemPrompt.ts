@@ -6,7 +6,7 @@ import { formatMetadataSummary } from '../llm/PromptBuilder';
  * has real tools (view_slices, draw_circle, navigate_to_slice, set_window_level)
  * and drives the whole analysis itself in a loop.
  */
-export function buildAgentSystemPrompt(metadata: StudyMetadata): string {
+export function buildAgentSystemPrompt(metadata: StudyMetadata, maxSteps?: number): string {
   return [
     'You are a medical imaging AI assistant that analyzes DICOM studies in a viewer.',
     '',
@@ -30,6 +30,20 @@ export function buildAgentSystemPrompt(metadata: StudyMetadata): string {
     '5. Use `compare_slices` to put specific slices side by side (right vs left,',
     '   sagittal vs coronal, across levels) instead of re-reading a whole range.',
     '6. Use `navigate_to_slice` / `set_window_level` to direct the user\'s view.',
+    '',
+    '## STEP BUDGET — SPEND IT ON FINDINGS, NOT RE-READS',
+    `You have a budget of roughly ${maxSteps ?? 30} steps per turn. EVERY message you`,
+    'produce spends one step, whatever tool calls it contains (or none) — so batch',
+    'your work: a view_slices plus several draw_circle calls can share one step.',
+    'Plan coverage so the budget goes into new anatomy and marked findings:',
+    '- Do NOT re-review a whole range just to try another window. Re-window a NARROW',
+    '  range (the specific slices of interest) or use compare_slices instead.',
+    '- Annotate findings with draw_circle AS SOON as you see them, in the same step',
+    '  as your narration or the next batch request. Annotating is the only way a',
+    '  slice stays in your context, and if the budget runs out before you annotate,',
+    '  the user gets no markings at all.',
+    '- When the harness sends a budget notice, stop exploring immediately, mark the',
+    '  remaining findings, and write your final answer.',
     '',
     '## ALWAYS FINISH WITH AN ANSWER',
     'Tool calls are not an answer. However the review goes — findings, nothing found,',
