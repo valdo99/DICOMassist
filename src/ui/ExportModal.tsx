@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Image as ImageIcon,
-  MessagesSquare,
   ListChecks,
 } from 'lucide-react';
 import type { StudyMetadata } from '../dicom/types';
@@ -86,8 +85,8 @@ export default function ExportModal({
         <div className="px-5 py-4 space-y-4">
           {/* Summary */}
           <p className="text-xs text-neutral-400 leading-relaxed">
-            Generates a formatted report of this analysis — an AI-authored clinical summary,
-            the marked findings with annotated slice images, and the conversation.
+            A report agent reads the full conversation with the analyzer and drafts a clinical
+            report — no raw transcript — with the marked findings and annotated slice images.
           </p>
           <div className="text-[11px] text-neutral-500 bg-neutral-950/60 border border-neutral-800 rounded-lg px-3 py-2 space-y-0.5">
             <div className="flex justify-between">
@@ -115,14 +114,6 @@ export default function ExportModal({
               checked={options.includeImages && hasImages}
               disabled={!hasImages || running}
               onChange={() => toggle('includeImages')}
-            />
-            <OptionRow
-              icon={<MessagesSquare className="w-4 h-4" />}
-              label="Conversation transcript"
-              hint={`${messages.length} message${messages.length === 1 ? '' : 's'}`}
-              checked={options.includeTranscript}
-              disabled={running}
-              onChange={() => toggle('includeTranscript')}
             />
             <OptionRow
               icon={<ListChecks className="w-4 h-4" />}

@@ -124,7 +124,6 @@ export function useExportReport(params: UseExportReportParams): UseExportReport 
           metadata,
           findings,
           images,
-          messages,
           plan,
           options,
           providerLabel,

@@ -47,15 +47,12 @@ export interface ExportReport {
 export interface ExportOptions {
   /** Embed an annotated image for each marked region. */
   includeImages: boolean;
-  /** Append the full user/assistant conversation transcript. */
-  includeTranscript: boolean;
   /** Include the AI's slice-selection rationale (when available). */
   includeSelectionRationale: boolean;
 }
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   includeImages: true,
-  includeTranscript: true,
   includeSelectionRationale: true,
 };
 
