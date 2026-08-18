@@ -1,10 +1,11 @@
-import { generateText, stepCountIs, type ModelMessage } from 'ai';
+import { generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { StudyMetadata } from '../dicom/types';
 import type { ChatMessage } from '../llm/types';
 import { buildAgentSystemPrompt } from './systemPrompt';
 import { createDicomTools, createRunContext, sliceKey, circleAnnotationUid, type AgentRunContext } from './tools';
-import { chooseModel, type ModelTier } from './modelRouter';
+import { chooseModel, type AgentProvider } from './modelRouter';
 import type { AgentBridge, AgentStepEvent, AgentFindingRef } from './types';
 import { logger } from '../utils/logger';
 
@@ -22,6 +23,8 @@ const MAX_IMAGES_IN_CONTEXT = 70;
 const MAX_IMAGE_BYTES_IN_CONTEXT = 20_000_000;
 
 export interface RunAgentParams {
+  /** Which API-backed provider to run the tool loop on. */
+  provider: AgentProvider;
   apiKey: string;
   metadata: StudyMetadata;
   /** Full conversation so far (the newest user message included). */
@@ -30,8 +33,8 @@ export interface RunAgentParams {
   /** First analysis of a study vs a follow-up — feeds model selection. */
   isNewAnalysis: boolean;
   surveyMode?: boolean;
-  /** Pin a tier instead of letting the harness choose. */
-  modelOverride?: ModelTier | 'auto';
+  /** Pin a specific model id instead of letting the harness choose (''/'auto' = auto). */
+  modelOverride?: string;
   /** Called as the agent works, for the live trace. */
   onStep?: (event: AgentStepEvent) => void;
   signal?: AbortSignal;
@@ -211,26 +214,39 @@ function stripImages(messages: ModelMessage[]): ModelMessage[] {
 }
 
 /**
- * Runs the DICOM agent: one tool-using loop (review a batch → mark findings →
- * compare → answer). The model sees the images it selects and marks them up,
- * and the harness picks the model tier from how hard the task looks.
+ * Build the AI SDK language model for the chosen provider. Both providers speak
+ * the same `generateText` + tools interface, so the rest of the agent (tool
+ * loop, image pruning, closing summary) is provider-agnostic. Gemini can see
+ * images returned from tool results as of @ai-sdk/google 2.0.13+ (PR #8357).
  */
-export async function runDicomAgent(params: RunAgentParams): Promise<RunAgentResult> {
-  const { apiKey, metadata, history, bridge, isNewAnalysis, surveyMode, modelOverride, onStep, signal } = params;
-
+function buildModel(provider: AgentProvider, apiKey: string, modelId: string): LanguageModel {
+  if (provider === 'gemini') {
+    const google = createGoogleGenerativeAI({ apiKey });
+    return google(modelId);
+  }
   const anthropic = createAnthropic({
     apiKey,
     // Required for direct browser calls — keeps the app client-only.
     headers: { 'anthropic-dangerous-direct-browser-access': 'true' },
   });
+  return anthropic(modelId);
+}
+
+/**
+ * Runs the DICOM agent: one tool-using loop (review a batch → mark findings →
+ * compare → answer). The model sees the images it selects and marks them up,
+ * and the harness picks the model tier from how hard the task looks.
+ */
+export async function runDicomAgent(params: RunAgentParams): Promise<RunAgentResult> {
+  const { provider, apiKey, metadata, history, bridge, isNewAnalysis, surveyMode, modelOverride, onStep, signal } = params;
 
   const question = [...history].reverse().find((m) => m.role === 'user')?.content ?? '';
-  const choice = chooseModel({ question, metadata, isNewAnalysis, surveyMode, override: modelOverride });
+  const choice = chooseModel({ provider, question, metadata, isNewAnalysis, surveyMode, override: modelOverride });
   onStep?.({ type: 'model', detail: `${choice.modelId} · ${choice.reason}` });
 
   const ctx = createRunContext();
   const tools = createDicomTools(metadata, bridge, ctx);
-  const model = anthropic(choice.modelId);
+  const model: LanguageModel = buildModel(provider, apiKey, choice.modelId);
   const system = buildAgentSystemPrompt(metadata, MAX_STEPS);
 
   const messages: ModelMessage[] = history.map((m) => ({ role: m.role, content: m.content }));

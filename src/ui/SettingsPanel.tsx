@@ -1,12 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, CheckCircle, XCircle, Loader2, Download, ChevronDown, Copy, Check, RefreshCw } from 'lucide-react';
 import type { ProviderConfig, ProviderType } from '../llm/types';
+import { SELECTABLE_MODELS, type AgentProvider } from '../agent/modelRouter';
 import {
   pingOllama,
   fetchOllamaModels,
   pullOllamaModel,
   type OllamaModelInfo,
 } from '../llm/LLMServiceFactory';
+
+const PROVIDERS: { id: ProviderType; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'gemini', label: 'Gemini' },
+  { id: 'ollama', label: 'Ollama' },
+];
 
 interface SettingsPanelProps {
   open: boolean;
@@ -120,40 +127,83 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
           <div>
             <label className="text-xs text-neutral-400 block mb-1.5">Provider</label>
             <div className="flex bg-neutral-900 rounded-lg p-0.5">
-              <button
-                onClick={() => setProvider('claude')}
-                className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  config.provider === 'claude' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                Claude API
-              </button>
-              <button
-                onClick={() => setProvider('ollama')}
-                className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  config.provider === 'ollama' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                Ollama (Local)
-              </button>
+              {PROVIDERS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setProvider(p.id)}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    config.provider === p.id ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
             </div>
           </div>
 
           {/* Claude fields */}
           {config.provider === 'claude' && (
-            <div>
-              <label className="text-xs text-neutral-400 block mb-1.5">API Key</label>
-              <input
-                type="password"
-                value={config.apiKey ?? ''}
-                onChange={(e) => onConfigChange({ ...config, apiKey: e.target.value })}
-                placeholder="sk-ant-..."
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
-              />
-              <p className="text-[10px] text-neutral-500 mt-1">
-                Stored in localStorage only. Never sent to our servers.
-              </p>
-            </div>
+            <>
+              <div>
+                <label className="text-xs text-neutral-400 block mb-1.5">API Key</label>
+                <input
+                  type="password"
+                  value={config.apiKey ?? ''}
+                  onChange={(e) => onConfigChange({ ...config, apiKey: e.target.value })}
+                  placeholder="sk-ant-..."
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-neutral-500 mt-1">
+                  Stored in localStorage only. Never sent to our servers. Get one at{' '}
+                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" className="text-blue-500 hover:text-blue-400 underline">console.anthropic.com</a>.
+                </p>
+              </div>
+              <div>
+                <label className="text-xs text-neutral-400 block mb-1.5">
+                  Model <span className="text-neutral-600">(Auto routes by task difficulty)</span>
+                </label>
+                <AgentModelPicker
+                  provider="claude"
+                  value={config.claudeModel || 'auto'}
+                  onChange={(m) => onConfigChange({ ...config, claudeModel: m })}
+                />
+              </div>
+            </>
+          )}
+
+          {/* Gemini fields */}
+          {config.provider === 'gemini' && (
+            <>
+              <div>
+                <label className="text-xs text-neutral-400 block mb-1.5">API Key</label>
+                <input
+                  type="password"
+                  value={config.geminiApiKey ?? ''}
+                  onChange={(e) => onConfigChange({ ...config, geminiApiKey: e.target.value })}
+                  placeholder="AQ.Ab… or AIza…"
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-neutral-500 mt-1">
+                  Stored in localStorage only. Never sent to our servers.
+                </p>
+                <p className="text-[10px] text-neutral-500 mt-1">
+                  To bill against Google Cloud credits, create the key in the{' '}
+                  <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" className="text-blue-500 hover:text-blue-400 underline">Cloud Console</a>{' '}
+                  on a billing-enabled project, enable the{' '}
+                  <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noopener" className="text-blue-500 hover:text-blue-400 underline">Generative Language API</a>, and restrict the key to that API.
+                </p>
+              </div>
+              <div>
+                <label className="text-xs text-neutral-400 block mb-1.5">
+                  Model <span className="text-neutral-600">(Auto routes by task difficulty)</span>
+                </label>
+                <AgentModelPicker
+                  provider="gemini"
+                  value={config.geminiModel || 'auto'}
+                  onChange={(m) => onConfigChange({ ...config, geminiModel: m })}
+                />
+              </div>
+            </>
           )}
 
           {/* Ollama fields */}
@@ -410,6 +460,79 @@ function RoleBadge({ role }: { role: 'text' | 'vision' | 'both' }) {
   if (role === 'text') return <span className="px-1 py-0 rounded text-[9px] bg-purple-900/50 text-purple-400">text</span>;
   if (role === 'vision') return <span className="px-1 py-0 rounded text-[9px] bg-teal-900/50 text-teal-400">vision</span>;
   return <span className="px-1 py-0 rounded text-[9px] bg-amber-900/50 text-amber-400">text+vision</span>;
+}
+
+/**
+ * Model selector for the API-backed agent providers (Claude, Gemini). "Auto"
+ * lets the harness route by task difficulty; picking a specific model pins it.
+ */
+function AgentModelPicker({
+  provider,
+  value,
+  onChange,
+}: {
+  provider: AgentProvider;
+  value: string; // 'auto' or a model id
+  onChange: (value: string) => void;
+}) {
+  const [dropOpen, setDropOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const models = SELECTABLE_MODELS[provider];
+
+  useEffect(() => {
+    if (!dropOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setDropOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [dropOpen]);
+
+  const isAuto = value === 'auto' || !value;
+  const selected = models.find((m) => m.id === value);
+  const displayLabel = isAuto ? 'Auto (recommended)' : selected?.label ?? value;
+
+  const pick = (v: string) => {
+    onChange(v);
+    setDropOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setDropOpen(!dropOpen)}
+        className="w-full flex items-center justify-between bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 hover:border-neutral-600"
+      >
+        <span className="truncate">{displayLabel}</span>
+        <ChevronDown className={`w-4 h-4 text-neutral-500 transition-transform ${dropOpen ? 'rotate-180' : ''}`} />
+      </button>
+      {dropOpen && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-neutral-800 border border-neutral-700 rounded-lg shadow-xl py-1 max-h-56 overflow-y-auto">
+          <button
+            onClick={() => pick('auto')}
+            className={`flex flex-col w-full px-3 py-1.5 text-left transition-colors ${
+              isAuto ? 'bg-blue-600/20 text-blue-400' : 'text-neutral-300 hover:bg-neutral-700'
+            }`}
+          >
+            <span className="text-sm">Auto (recommended)</span>
+            <span className="text-[10px] text-neutral-500">Route by task difficulty</span>
+          </button>
+          {models.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => pick(m.id)}
+              className={`flex flex-col w-full px-3 py-1.5 text-left transition-colors ${
+                value === m.id ? 'bg-blue-600/20 text-blue-400' : 'text-neutral-300 hover:bg-neutral-700'
+              }`}
+            >
+              <span className="text-sm">{m.label}</span>
+              <span className="text-[10px] text-neutral-500">{m.desc}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ModelDropdown({

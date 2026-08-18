@@ -1,5 +1,8 @@
 import type { StudyMetadata } from '../dicom/types';
 
+/** The tool-using agent works with either of these API-backed providers. */
+export type AgentProvider = 'claude' | 'gemini';
+
 /**
  * Model tiers the harness can pick from, cheapest → most capable.
  * The harness (not the model) decides, from signals it can measure: how hard
@@ -8,10 +11,42 @@ import type { StudyMetadata } from '../dicom/types';
  */
 export type ModelTier = 'light' | 'standard' | 'deep';
 
-export const TIER_MODELS: Record<ModelTier, string> = {
-  light: 'claude-sonnet-4-6',
-  standard: 'claude-opus-4-8',
-  deep: 'claude-opus-5',
+export const TIER_MODELS: Record<AgentProvider, Record<ModelTier, string>> = {
+  claude: {
+    light: 'claude-sonnet-4-6',
+    standard: 'claude-opus-4-8',
+    deep: 'claude-opus-5',
+  },
+  gemini: {
+    light: 'gemini-3.5-flash',
+    standard: 'gemini-3.7-flash',
+    deep: 'gemini-3.1-pro-preview',
+  },
+};
+
+/** A model the user can pin in Settings (per provider), plus the "Auto" option. */
+export interface SelectableModel {
+  id: string;
+  label: string;
+  desc: string;
+}
+
+export const SELECTABLE_MODELS: Record<AgentProvider, SelectableModel[]> = {
+  claude: [
+    { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', desc: 'Fast, lighter reasoning' },
+    { id: 'claude-opus-4-8', label: 'Opus 4.8', desc: 'Strong all-rounder' },
+    { id: 'claude-opus-5', label: 'Opus 5', desc: 'Deepest reasoning' },
+  ],
+  // Current Gemini lineup (Aug 2026). All are multimodal + support tool calling.
+  // 2.5-pro / 2.5-flash and 3-pro-preview are retired/deprecated, so they're not
+  // offered here — see https://ai.google.dev/gemini-api/docs/models.
+  gemini: [
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', desc: 'Deepest reasoning (preview)' },
+    { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', desc: 'Most capable Flash · agentic' },
+    { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', desc: 'Stable, token-efficient' },
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', desc: 'Fast, capable' },
+    { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite', desc: 'Cheapest, low latency' },
+  ],
 };
 
 export interface ModelChoice {
@@ -19,6 +54,13 @@ export interface ModelChoice {
   tier: ModelTier;
   score: number;
   reason: string;
+}
+
+/** Resolve a pinned model id back to its tier (for the trace); default 'standard'. */
+function tierForModel(provider: AgentProvider, modelId: string): ModelTier {
+  const entry = (Object.entries(TIER_MODELS[provider]) as Array<[ModelTier, string]>)
+    .find(([, id]) => id === modelId);
+  return entry?.[0] ?? 'standard';
 }
 
 /** Questions that need real diagnostic reasoning. */
@@ -46,21 +88,24 @@ const LIGHT_PATTERNS: Array<[RegExp, number, string]> = [
  * surfaced in the agent trace so the choice is visible to the user.
  */
 export function chooseModel(params: {
+  /** Which provider's model catalog to route within. */
+  provider: AgentProvider;
   question: string;
   metadata: StudyMetadata;
   /** True for the first analysis of a study; follow-ups are usually lighter. */
   isNewAnalysis: boolean;
   /** Survey mode sweeps many structures — treat as harder. */
   surveyMode?: boolean;
-  /** Explicit user override; bypasses scoring. */
-  override?: ModelTier | 'auto';
+  /** '', undefined, or 'auto' → auto-route by tier; any other value → a pinned model id. */
+  override?: string;
 }): ModelChoice {
-  const { question, metadata, isNewAnalysis, surveyMode, override } = params;
+  const { provider, question, metadata, isNewAnalysis, surveyMode, override } = params;
+  const tiers = TIER_MODELS[provider];
 
   if (override && override !== 'auto') {
     return {
-      modelId: TIER_MODELS[override],
-      tier: override,
+      modelId: override,
+      tier: tierForModel(provider, override),
       score: -1,
       reason: 'model pinned in settings',
     };
@@ -103,7 +148,7 @@ export function chooseModel(params: {
   const tier: ModelTier = score >= 75 ? 'deep' : score >= 40 ? 'standard' : 'light';
 
   return {
-    modelId: TIER_MODELS[tier],
+    modelId: tiers[tier],
     tier,
     score,
     reason: reasons.slice(0, 4).join(', '),

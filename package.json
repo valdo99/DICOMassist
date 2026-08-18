@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.38",
+    "@ai-sdk/google": "^4.0.44",
     "@cornerstonejs/core": "^4.16.1",
     "@cornerstonejs/dicom-image-loader": "^4.16.1",
     "@cornerstonejs/tools": "^4.16.1",

@@ -31,7 +31,7 @@ A knee MRI can have 200+ slices across 8+ series. Dumping them all to an AI give
 - **Privacy-first** — DICOM files are processed entirely in your browser. No data is uploaded to any server. Image data is only sent to the LLM provider you configure when you run an analysis
 - **Multiple layouts** — 1×1, 1×2, 2×1, 2×2 grid, and MPR (axial/sagittal/coronal)
 - **Standard tools** — Window/Level, Zoom, Pan, Length measurement, Rotate, Flip, Invert, Cine playback
-- **Provider-agnostic** — Works with Claude API (recommended) or local models via Ollama
+- **Provider-agnostic** — Works with Claude or Google Gemini (recommended), or local models via Ollama; pick a specific model or let it auto-route by task difficulty
 
 ## Getting Started
 
@@ -51,10 +51,13 @@ npm run dev
 ### Configure AI analysis
 
 1. Click the ⚙ Settings icon in the toolbar
-2. Select **Claude API** and enter your API key ([get one here](https://console.anthropic.com))
+2. Select a provider and enter your API key:
+   - **Claude** — [get a key](https://console.anthropic.com)
+   - **Gemini** — [AI Studio key](https://aistudio.google.com/apikey) for personal use, or, to bill against **Google Cloud credits**, create the key in the [Cloud Console](https://console.cloud.google.com/apis/credentials) on a billing-enabled project with the [Generative Language API](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com) enabled (restrict the key to that API)
+   - Optionally pin a specific model, or leave it on **Auto** to route by task difficulty
 3. Load DICOM files, click **Analyze**, and describe what to evaluate
 
-For local models, install [Ollama](https://ollama.ai), pull a model (`ollama pull gemma3:4b`), and select Ollama in settings. Note: local models produce significantly lower quality results for medical image analysis compared to Claude.
+For local models, install [Ollama](https://ollama.ai), pull a model (`ollama pull gemma3:4b`), and select Ollama in settings. Note: local models produce significantly lower quality results for medical image analysis compared to Claude or Gemini.
 
 ### Sample data
 
@@ -68,7 +71,7 @@ To try DICOMassist, you can use public DICOM datasets:
 
 - **React 18** + TypeScript + Vite
 - **Cornerstone3D v4** — medical image rendering, viewport management, tools
-- **Claude API** (Anthropic) — multimodal LLM for image analysis
+- **Claude** (Anthropic) & **Gemini** (Google) — multimodal LLMs driving a tool-using agent (Vercel AI SDK) for image analysis
 - **Ollama** — optional local model support
 
 ## Architecture

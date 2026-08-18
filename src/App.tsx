@@ -578,13 +578,13 @@ export default function App() {
   // first, so passing [] is a clean "remove all". The delay lets a series switch
   // settle so the target slice's viewport is ready.
   // Circles come from either the legacy pipeline (Ollama) or the agent path
-  // (Claude); whichever is populated is the active set.
+  // (Claude + Gemini); whichever is populated is the active set.
   // Pick the active path's set by provider, not by "whichever is non-empty":
-  // Claude runs the agent (agentAnnotations), Ollama the legacy pipeline. A
-  // stale set left by the other provider must never shadow the active one after
-  // a provider switch (bridge.clearCircles only empties agentAnnotations).
+  // Claude/Gemini run the agent (agentAnnotations), Ollama the legacy pipeline.
+  // A stale set left by the other provider must never shadow the active one
+  // after a provider switch (bridge.clearCircles only empties agentAnnotations).
   const annotations = useMemo(
-    () => (providerConfig.provider === 'claude' ? agentAnnotations : pipeline?.annotations ?? []),
+    () => (providerConfig.provider === 'ollama' ? pipeline?.annotations ?? [] : agentAnnotations),
     [providerConfig.provider, pipeline?.annotations, agentAnnotations],
   );
 

@@ -452,6 +452,12 @@ export function createLLMService(config: ProviderConfig): LLMService {
     if (!key) throw new Error('Claude API key is required. Enter it in Settings.');
     return new ClaudeService(key);
   }
+  if (config.provider === 'gemini') {
+    // Gemini runs through the in-app tool-using agent (needs the viewer bridge),
+    // not the legacy two-call pipeline. Reaching here means the bridge was
+    // missing — surface it clearly instead of silently using Ollama.
+    throw new Error('Gemini requires the in-app agent and is not available in this context.');
+  }
   const baseUrl = config.ollamaUrl || 'http://localhost:11434';
   const textModel = config.ollamaTextModel || DEFAULT_TEXT_MODEL;
   const visionModel = config.ollamaVisionModel || DEFAULT_VISION_MODEL;

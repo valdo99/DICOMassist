@@ -68,7 +68,7 @@ export default function LandingScreen({ children, recent }: LandingScreenProps) 
             <li>Smart slice filtering — AI picks what matters</li>
             <li>Interactive results with clickable slice navigation</li>
             <li>Privacy-first: DICOM files stay in your browser</li>
-            <li>Works with Claude API or local models via Ollama</li>
+            <li>Works with Claude, Gemini, or local models via Ollama</li>
           </ul>
         </div>
 
