@@ -256,19 +256,28 @@ export function useLLMChat(
   messagesRef.current = messages;
   const agentAbortRef = useRef<AbortController | null>(null);
 
-  // Whether to route through the tool-using agent (Claude only — Ollama's
-  // tool/vision support is unreliable, so it stays on the legacy pipeline).
-  const useAgent = providerConfig.provider === 'claude' && !!bridge;
+  // Whether to route through the tool-using agent (Claude + Gemini — both speak
+  // the AI SDK tool/vision interface. Ollama's tool/vision support is
+  // unreliable, so it stays on the legacy two-call pipeline).
+  const useAgent = (providerConfig.provider === 'claude' || providerConfig.provider === 'gemini') && !!bridge;
 
   /** Run one agent turn: the tool loop produces the assistant reply and drives the viewer. */
   const runAgentTurn = useCallback(async (history: ChatMessage[], isNewAnalysis: boolean) => {
     if (!metadata || !bridge) return;
-    const apiKey = providerConfig.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY;
+    const provider = providerConfig.provider === 'gemini' ? 'gemini' : 'claude';
+    const apiKey = provider === 'gemini'
+      ? (providerConfig.geminiApiKey || import.meta.env.VITE_GOOGLE_GENERATIVE_AI_API_KEY)
+      : (providerConfig.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY);
     if (!apiKey) {
-      setError('Claude API key is required. Enter it in Settings.');
+      setError(
+        provider === 'gemini'
+          ? 'Gemini API key is required. Enter it in Settings.'
+          : 'Claude API key is required. Enter it in Settings.',
+      );
       setStatus('error');
       return;
     }
+    const modelOverride = provider === 'gemini' ? providerConfig.geminiModel : providerConfig.claudeModel;
     if (isNewAnalysis) bridge.clearCircles();
     setAgentSteps([]);
     setError(null);
@@ -279,7 +288,9 @@ export function useLLMChat(
     logger.group('[DICOMassist] Agent turn');
     try {
       const { text } = await runDicomAgent({
+        provider,
         apiKey,
+        modelOverride,
         metadata,
         history,
         bridge,

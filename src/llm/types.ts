@@ -66,11 +66,14 @@ export interface ResolvedCircleAnnotation {
   radius: number;         // normalized radius, fraction of image width
 }
 
-export type ProviderType = 'claude' | 'ollama';
+export type ProviderType = 'claude' | 'gemini' | 'ollama';
 
 export interface ProviderConfig {
   provider: ProviderType;
-  apiKey?: string;           // Claude only
+  apiKey?: string;           // Claude API key
+  claudeModel?: string;      // '' | 'auto' = auto-route by tier; else a pinned Claude model id
+  geminiApiKey?: string;     // Gemini (Google Generative AI) API key
+  geminiModel?: string;      // '' | 'auto' = auto-route by tier; else a pinned Gemini model id
   ollamaTextModel?: string;  // Ollama model for Call 1 (text-only planning)
   ollamaVisionModel?: string; // Ollama model for Call 2 (multimodal analysis)
   ollamaUrl?: string;        // Ollama base URL override
