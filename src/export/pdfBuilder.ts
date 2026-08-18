@@ -1,6 +1,6 @@
 import type { jsPDF as JsPdf } from 'jspdf';
 import type { StudyMetadata } from '../dicom/types';
-import type { ChatMessage, ResolvedCircleAnnotation, SelectionPlan } from '../llm/types';
+import type { ResolvedCircleAnnotation, SelectionPlan } from '../llm/types';
 import type { AnnotatedSliceImage } from './sliceImage';
 import type { ExportFinding, ExportOptions, ExportReport, FindingTier } from './types';
 
@@ -10,7 +10,6 @@ export interface PdfBuildInput {
   findings: ResolvedCircleAnnotation[];
   /** uid → annotated slice image. */
   images: Map<string, AnnotatedSliceImage>;
-  messages: ChatMessage[];
   plan?: SelectionPlan | null;
   options: ExportOptions;
   /** e.g. "Claude · claude-opus-4-8" or "Fallback (deterministic)". */
@@ -47,22 +46,6 @@ function formatStudyDate(raw?: string): string {
   if (!raw) return '—';
   const m = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
   return m ? `${m[1]}-${m[2]}-${m[3]}` : raw;
-}
-
-/** Strip the app's markdown-ish tokens for a clean plain-text transcript. */
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, '')
-    .split('\n')
-    .map((ln) =>
-      ln
-        .replace(/^#{1,6}\s+/, '')
-        .replace(/^\s*[-•*]\s+/, '• ')
-        .replace(/\*\*(.*?)\*\*/g, '$1')
-        .trimEnd(),
-    )
-    .join('\n')
-    .trim();
 }
 
 /**
@@ -130,13 +113,6 @@ export async function buildReportPdf(input: PdfBuildInput): Promise<Blob> {
         color: MUTED,
         indent: 3,
       });
-    }
-  }
-
-  if (input.options.includeTranscript && input.messages.length > 0) {
-    b.section('Conversation Transcript');
-    for (const msg of input.messages) {
-      b.transcriptEntry(msg);
     }
   }
 
@@ -404,18 +380,6 @@ class Builder {
       this.doc.text(c, MARGIN, this.y);
       this.y += c.length * 3.4 + 1.5;
     }
-  }
-
-  transcriptEntry(msg: ChatMessage) {
-    const role = msg.role === 'user' ? 'Clinician' : 'AI analysis';
-    this.ensure(7);
-    this.y += 1.5;
-    this.doc.setFont('helvetica', 'bold');
-    this.doc.setFontSize(8.5);
-    this.text(msg.role === 'user' ? ACCENT : INK);
-    this.doc.text(role, MARGIN, this.y);
-    this.y += 4;
-    this.paragraph(stripMarkdown(msg.content), { size: 9, color: INK, gapAfter: 2 });
   }
 
   /** Draw the footer (with final page numbers) on every page. Call last. */
