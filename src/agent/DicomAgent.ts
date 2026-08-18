@@ -1,11 +1,10 @@
 import { generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { StudyMetadata } from '../dicom/types';
 import type { ChatMessage } from '../llm/types';
 import { buildAgentSystemPrompt } from './systemPrompt';
 import { createDicomTools, createRunContext, sliceKey, circleAnnotationUid, type AgentRunContext } from './tools';
 import { chooseModel, type AgentProvider } from './modelRouter';
+import { buildProviderModel } from './buildModel';
 import type { AgentBridge, AgentStepEvent, AgentFindingRef } from './types';
 import { logger } from '../utils/logger';
 
@@ -214,25 +213,6 @@ function stripImages(messages: ModelMessage[]): ModelMessage[] {
 }
 
 /**
- * Build the AI SDK language model for the chosen provider. Both providers speak
- * the same `generateText` + tools interface, so the rest of the agent (tool
- * loop, image pruning, closing summary) is provider-agnostic. Gemini can see
- * images returned from tool results as of @ai-sdk/google 2.0.13+ (PR #8357).
- */
-function buildModel(provider: AgentProvider, apiKey: string, modelId: string): LanguageModel {
-  if (provider === 'gemini') {
-    const google = createGoogleGenerativeAI({ apiKey });
-    return google(modelId);
-  }
-  const anthropic = createAnthropic({
-    apiKey,
-    // Required for direct browser calls — keeps the app client-only.
-    headers: { 'anthropic-dangerous-direct-browser-access': 'true' },
-  });
-  return anthropic(modelId);
-}
-
-/**
  * Runs the DICOM agent: one tool-using loop (review a batch → mark findings →
  * compare → answer). The model sees the images it selects and marks them up,
  * and the harness picks the model tier from how hard the task looks.
@@ -246,7 +226,7 @@ export async function runDicomAgent(params: RunAgentParams): Promise<RunAgentRes
 
   const ctx = createRunContext();
   const tools = createDicomTools(metadata, bridge, ctx);
-  const model: LanguageModel = buildModel(provider, apiKey, choice.modelId);
+  const model: LanguageModel = buildProviderModel(provider, apiKey, choice.modelId);
   const system = buildAgentSystemPrompt(metadata, MAX_STEPS);
 
   const messages: ModelMessage[] = history.map((m) => ({ role: m.role, content: m.content }));
