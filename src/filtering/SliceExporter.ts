@@ -10,6 +10,13 @@ interface ExportedSlice {
   zPosition: number;
 }
 
+/** A windowed slice rendered to an offscreen canvas, with its final dimensions. */
+export interface WindowedSliceCanvas {
+  canvas: OffscreenCanvas;
+  width: number;
+  height: number;
+}
+
 export async function exportSlicesToJpeg(
   slices: SelectedSlice[],
   windowCenter: number,
@@ -36,6 +43,23 @@ async function renderSliceToJpeg(
   windowCenter: number,
   windowWidth: number,
 ): Promise<Blob | null> {
+  const rendered = await renderWindowedSliceToCanvas(imageId, windowCenter, windowWidth);
+  if (!rendered) return null;
+  return rendered.canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
+}
+
+/**
+ * Render a DICOM slice to a windowed grayscale offscreen canvas (rescale
+ * slope/intercept + window/level applied, resized to a max long edge of
+ * 1568px). Shared by the LLM JPEG export and the PDF's annotated-slice
+ * renderer, which draws circles on top of the returned canvas. Returns null if
+ * the slice or a canvas context can't be obtained.
+ */
+export async function renderWindowedSliceToCanvas(
+  imageId: string,
+  windowCenter: number,
+  windowWidth: number,
+): Promise<WindowedSliceCanvas | null> {
   const image = await imageLoader.loadAndCacheImage(imageId);
 
   const { columns: width, rows: height } = image;
@@ -91,8 +115,8 @@ async function renderSliceToJpeg(
     if (!resizedCtx) return null;
 
     resizedCtx.drawImage(canvas, 0, 0, newW, newH);
-    return resized.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
+    return { canvas: resized, width: newW, height: newH };
   }
 
-  return canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
+  return { canvas, width, height };
 }

@@ -24,6 +24,7 @@ import {
   Circle,
   FolderOpen,
   Target,
+  FileDown,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -57,6 +58,8 @@ interface ToolbarProps {
   findingsCount?: number;
   showFindings?: boolean;
   onToggleFindings?: () => void;
+  /** Open the PDF export dialog. Present only when there's an analysis to export. */
+  onExport?: () => void;
 }
 
 const mainTools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = [
@@ -154,6 +157,7 @@ export default function Toolbar({
   cineEnabled = false, onCineToggle,
   onCloseStudy,
   findingsCount = 0, showFindings, onToggleFindings,
+  onExport,
 }: ToolbarProps) {
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [markerOpen, setMarkerOpen] = useState(false);
@@ -437,6 +441,18 @@ export default function Toolbar({
             </span>
           </span>
           <span className="hidden sm:inline">Findings</span>
+        </button>
+      )}
+
+      {/* Export report (PDF) — only when there's an analysis to export */}
+      {onExport && (
+        <button
+          onClick={onExport}
+          title="Export report (PDF)"
+          className={btnClass()}
+        >
+          <FileDown className="w-5 h-5" />
+          <span className="hidden sm:inline">Export</span>
         </button>
       )}
 

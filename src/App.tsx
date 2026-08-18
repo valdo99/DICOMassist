@@ -13,6 +13,7 @@ import SeriesBrowser from './ui/SeriesBrowser';
 import ChatSidebar, { type ChatSidebarHandle } from './ui/ChatSidebar';
 import FindingsPanel, { type FindingRef } from './ui/FindingsPanel';
 import SettingsPanel from './ui/SettingsPanel';
+import ExportModal from './ui/ExportModal';
 import DisclaimerModal from './ui/DisclaimerModal';
 import LandingScreen from './ui/LandingScreen';
 import RecentStudies from './ui/RecentStudies';
@@ -54,6 +55,7 @@ export default function App() {
   const [showMetadata, setShowMetadata] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>(loadConfig);
   const [showSeriesBrowser, setShowSeriesBrowser] = useState(false);
   const [activeSeriesUID, setActiveSeriesUID] = useState<string>('');
@@ -423,6 +425,8 @@ export default function App() {
       if (e.key === 'Escape') {
         if (status === 'awaiting-confirmation') {
           cancelPlan();
+        } else if (exportOpen) {
+          setExportOpen(false);
         } else if (settingsOpen) {
           setSettingsOpen(false);
         }
@@ -431,7 +435,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [imageIds.length, studyMetadata, settingsOpen, status, cancelPlan]);
+  }, [imageIds.length, studyMetadata, settingsOpen, exportOpen, status, cancelPlan]);
 
   // Fall back to W/L if leaving MPR while Crosshairs is active
   useEffect(() => {
@@ -810,6 +814,7 @@ export default function App() {
             return !v;
           })
         }
+        onExport={messages.length > 0 && studyMetadata ? () => setExportOpen(true) : undefined}
       />
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {showSeriesBrowser && studyMetadata && studyMetadata.series.length > 1 && (
@@ -913,6 +918,16 @@ export default function App() {
         config={providerConfig}
         onConfigChange={handleConfigChange}
       />
+      {exportOpen && (
+        <ExportModal
+          onClose={() => setExportOpen(false)}
+          metadata={studyMetadata}
+          messages={messages}
+          findings={annotations}
+          providerConfig={providerConfig}
+          plan={currentPlan}
+        />
+      )}
     </div>
   );
 }
